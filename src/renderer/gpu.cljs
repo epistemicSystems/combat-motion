@@ -406,6 +406,63 @@
                         :height height
                         :depthOrArrayLayers 1})))
 
+(defn download-texture!
+  "Download image data from GPU texture.
+
+  Args:
+    ctx: GPU context
+    texture: GPU texture handle (must have :copy-src usage)
+    width: Image width (pixels)
+    height: Image height (pixels)
+
+  Returns:
+    Promise<Uint8ClampedArray> - RGBA pixel data
+
+  Note: This is SLOW (similar to download-buffer!). Requires staging buffer.
+
+  Example:
+    (-> (download-texture! ctx texture 256 256)
+        (.then (fn [pixels]
+                 (js/console.log \"Downloaded\" (.-length pixels) \"bytes\"))))"
+  [ctx texture width height]
+  (let [device (:device ctx)
+        bytes-per-row (* width 4) ;; RGBA = 4 bytes per pixel
+        size-bytes (* width height 4)
+
+        ;; Create staging buffer (GPU → CPU)
+        staging-buffer (.createBuffer device
+                                      #js {:size size-bytes
+                                           :usage (bit-or js/GPUBufferUsage.COPY_DST
+                                                         js/GPUBufferUsage.MAP_READ)})
+        encoder (.createCommandEncoder device)]
+
+    ;; Copy texture to staging buffer
+    (.copyTextureToBuffer encoder
+                          #js {:texture texture}
+                          #js {:buffer staging-buffer
+                               :bytesPerRow bytes-per-row}
+                          #js {:width width
+                               :height height
+                               :depthOrArrayLayers 1})
+
+    ;; Submit command
+    (let [queue (:queue ctx)]
+      (.submit queue #js [(.finish encoder)]))
+
+    ;; Map staging buffer and read
+    (js/Promise.
+     (fn [resolve reject]
+       (-> (.mapAsync staging-buffer js/GPUMapMode.READ)
+           (.then (fn []
+                    (let [mapped-range (.getMappedRange staging-buffer)
+                          ;; Use Uint8ClampedArray for pixel data (standard for ImageData)
+                          result (js/Uint8ClampedArray. size-bytes)]
+                      (js-invoke result "set" (js/Uint8Array. mapped-range))
+                      (.unmap staging-buffer)
+                      (.destroy staging-buffer)
+                      (resolve result))))
+           (.catch reject))))))
+
 ;; ============================================================================
 ;; Utility Functions
 ;; ============================================================================
