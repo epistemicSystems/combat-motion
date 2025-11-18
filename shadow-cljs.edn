@@ -1,0 +1,35 @@
+;; CombatSys Motion Analysis Platform
+;; Shadow-CLJS Build Configuration
+
+{:source-paths ["src/shared" "src/main" "src/renderer"]
+ 
+ :dependencies
+ [[reagent "1.2.0"]
+  [re-frame "1.4.0"]
+  [binaryage/devtools "1.0.7"]
+  [day8.re-frame/tracing "0.6.2"]]
+ 
+ :dev-http
+ {8020 "resources/public"}
+ 
+ :builds
+ {:main
+  {:target :node-script
+   :main combatsys.main.core/init
+   :output-to "out/main.js"
+   :output-dir "out/main"
+   :devtools {:enabled false}}
+  
+  :renderer
+  {:target :browser
+   :output-dir "resources/public/js"
+   :asset-path "/js"
+   :modules {:app {:init-fn combatsys.renderer.core/init
+                   :entries [combatsys.renderer.core]}}
+   :devtools
+   {:before-load combatsys.renderer.core/before-reload
+    :after-load combatsys.renderer.core/after-reload
+    :preloads [devtools.preload
+               day8.re-frame-10x.preload]
+    :http-root "resources/public"
+    :http-port 8021}}}}
