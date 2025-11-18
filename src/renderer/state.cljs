@@ -25,18 +25,24 @@
     :overlays #{:skeleton :metrics} ;; Which overlays to show
     :settings {:fps 30
                :show-debug false}}
-   
+
+   :camera
+   {:active? false ;; Is camera stream active?
+    :handle nil ;; Camera handle from camera/init-camera!
+    :error nil ;; Last camera error
+    :fps 0 ;; Current FPS
+    :frame-count 0} ;; Total frames captured
+
    :capture
    {:mode :idle ;; :idle | :recording | :processing
-    :camera-stream nil
     :current-frame nil
     :buffer [] ;; Last 30 frames for real-time analysis
     :recording-start-time nil}
-   
+
    :sessions {} ;; Map of session-id → session
-   
+
    :current-session-id nil
-   
+
    :feedback
    {:cues-queue [] ;; Audio cues to play
     :recent-events [] ;; Last 10 events
@@ -136,6 +142,55 @@
                   (conj overlays overlay-key))))))
 
 ;; ============================================================
+;; CAMERA EVENTS
+;; ============================================================
+
+(rf/reg-event-db
+ ::camera-started
+ (fn [db [_ camera-handle]]
+   (println "Camera started:" camera-handle)
+   (-> db
+       (assoc-in [:camera :active?] true)
+       (assoc-in [:camera :handle] camera-handle)
+       (assoc-in [:camera :error] nil))))
+
+(rf/reg-event-db
+ ::camera-stopped
+ (fn [db _]
+   (println "Camera stopped")
+   (-> db
+       (assoc-in [:camera :active?] false)
+       (assoc-in [:camera :handle] nil)
+       (assoc-in [:camera :fps] 0)
+       (assoc-in [:camera :frame-count] 0))))
+
+(rf/reg-event-db
+ ::camera-error
+ (fn [db [_ error]]
+   (println "Camera error:" error)
+   (-> db
+       (assoc-in [:camera :active?] false)
+       (assoc-in [:camera :error] error))))
+
+(rf/reg-event-db
+ ::camera-frame-captured
+ (fn [db [_ frame]]
+   ;; Update frame count and current frame
+   ;; Note: We don't store the full frame data (too large)
+   ;; Just track that we captured it
+   (let [frame-count (inc (get-in db [:camera :frame-count]))]
+     (-> db
+         (assoc-in [:camera :frame-count] frame-count)
+         (assoc-in [:capture :current-frame]
+                   {:timestamp-ms (:timestamp-ms frame)
+                    :frame-index frame-count})))))
+
+(rf/reg-event-db
+ ::camera-update-fps
+ (fn [db [_ fps]]
+   (assoc-in db [:camera :fps] fps)))
+
+;; ============================================================
 ;; SUBSCRIPTIONS (Read from state)
 ;; ============================================================
 
@@ -205,3 +260,32 @@
  :<- [::current-session]
  (fn [session _]
    (get-in session [:session/analysis :posture])))
+
+;; ============================================================
+;; CAMERA SUBSCRIPTIONS
+;; ============================================================
+
+(rf/reg-sub
+ ::camera-active?
+ (fn [db _]
+   (get-in db [:camera :active?])))
+
+(rf/reg-sub
+ ::camera-handle
+ (fn [db _]
+   (get-in db [:camera :handle])))
+
+(rf/reg-sub
+ ::camera-error
+ (fn [db _]
+   (get-in db [:camera :error])))
+
+(rf/reg-sub
+ ::camera-fps
+ (fn [db _]
+   (get-in db [:camera :fps])))
+
+(rf/reg-sub
+ ::camera-frame-count
+ (fn [db _]
+   (get-in db [:camera :frame-count])))
