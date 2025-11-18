@@ -11,7 +11,8 @@
             [re-frame.core :as rf]
             [combatsys.renderer.camera :as camera]
             [combatsys.renderer.mediapipe :as mediapipe]
-            [combatsys.renderer.state :as state]))
+            [combatsys.renderer.state :as state]
+            [combatsys.shared.pose :as pose]))
 
 ;; ============================================================
 ;; FPS COUNTER (Pure)
@@ -119,14 +120,17 @@
                                ;; Estimate pose from frame
                                (when (mediapipe/detector-ready?)
                                  (-> (mediapipe/estimate-pose! (:canvas frame))
-                                     (.then (fn [pose]
-                                              (if pose
-                                                (do
-                                                  ;; Pose detected - dispatch to state
-                                                  (rf/dispatch [::state/pose-detected pose])
-                                                  ;; Call callback with frame + pose
+                                     (.then (fn [raw-pose]
+                                              (if raw-pose
+                                                (let [;; Enhance pose with angles (pure, <1ms)
+                                                      enhanced-pose (pose/enhance-pose-with-angles
+                                                                     raw-pose
+                                                                     {:measure-time? true})]
+                                                  ;; Pose detected - dispatch enhanced pose to state
+                                                  (rf/dispatch [::state/pose-detected enhanced-pose])
+                                                  ;; Call callback with frame + enhanced pose
                                                   (when on-frame-captured
-                                                    (on-frame-captured (assoc frame :pose pose))))
+                                                    (on-frame-captured (assoc frame :pose enhanced-pose))))
                                                 ;; No pose detected
                                                 (do
                                                   (rf/dispatch [::state/no-pose-detected])
