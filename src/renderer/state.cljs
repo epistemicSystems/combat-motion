@@ -28,6 +28,7 @@
     :selected-session-id nil
     :timeline-position-ms 0
     :overlays #{:skeleton :metrics} ;; Which overlays to show
+    :analysis-tab :breathing ;; :breathing | :posture (active analysis tab)
     :settings {:fps 30
                :show-debug false}}
 
@@ -169,6 +170,12 @@
                 (if (contains? overlays overlay-key)
                   (disj overlays overlay-key)
                   (conj overlays overlay-key))))))
+
+(rf/reg-event-db
+ ::set-analysis-tab
+ (fn [db [_ tab]]
+   (println "Switching analysis tab to:" tab)
+   (assoc-in db [:ui :analysis-tab] tab)))
 
 ;; ============================================================
 ;; CAMERA EVENTS
@@ -331,6 +338,22 @@
  :<- [::current-session]
  (fn [session _]
    (get-in session [:session/analysis :posture])))
+
+(rf/reg-sub
+ ::analysis-tab
+ (fn [db _]
+   (get-in db [:ui :analysis-tab] :breathing))) ;; Default to breathing
+
+(rf/reg-sub
+ ::available-analysis-tabs
+ :<- [::current-session]
+ (fn [session _]
+   "Return vector of available analysis tabs for current session."
+   (when session
+     (let [analysis (:session/analysis session)]
+       (cond-> []
+         (some? (:breathing analysis)) (conj :breathing)
+         (some? (:posture analysis)) (conj :posture))))))
 
 ;; ============================================================
 ;; CAMERA SUBSCRIPTIONS
