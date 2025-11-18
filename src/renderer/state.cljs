@@ -151,12 +151,17 @@
  (fn [db [_ session-id]]
    (println "Analyzing session" session-id "...")
    (let [session (get-in db [:sessions session-id])
-         
+         user-profile (:user-profile db) ;; Get active user profile for personalization
+
          ;; Run all analyzers (pure functions)
+         ;; Pass user-profile for personalized thresholds and baseline comparison
          analyzed (-> session
-                      breathing/analyze
-                      posture/analyze)]
-     
+                      (breathing/analyze user-profile)
+                      (posture/analyze user-profile))]
+
+     (when user-profile
+       (println "Using personalized analysis for user:" (:user-id user-profile)))
+
      ;; Update session with analysis results
      (assoc-in db [:sessions session-id] analyzed))))
 

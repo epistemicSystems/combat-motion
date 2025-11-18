@@ -348,7 +348,7 @@
   "Detect periods where breathing stops or becomes shallow.
 
   Algorithm:
-  1. Compute dynamic threshold (30% of mean signal amplitude)
+  1. Compute dynamic threshold (fraction of mean signal amplitude)
   2. Find regions below threshold
   3. Merge adjacent regions (within 2 seconds)
   4. Filter out very short windows (<1 second)
@@ -357,6 +357,7 @@
 
   Args:
     signal: Vector of motion magnitudes
+    threshold-fraction: Threshold as fraction of mean (default 0.3)
     fps: Frames per second (default 15)
 
   Returns:
@@ -364,15 +365,22 @@
 
   Example:
     (def signal [0.5 0.5 0.5 0.1 0.1 0.1 0.5 0.5])
-    (detect-fatigue-windows signal 30)
-    ;; => [{:start-ms 100 :end-ms 200 :severity 0.75}]"
-  ([signal] (detect-fatigue-windows signal 15))
-  ([signal fps]
+    (detect-fatigue-windows signal 0.3 30)
+    ;; => [{:start-ms 100 :end-ms 200 :severity 0.75}]
+
+  Personalization:
+    - Default threshold-fraction: 0.3 (30% of mean)
+    - User profile can customize based on their breathing baseline"
+  ([signal]
+   (detect-fatigue-windows signal 0.3 15))
+  ([signal threshold-fraction]
+   (detect-fatigue-windows signal threshold-fraction 15))
+  ([signal threshold-fraction fps]
    (if (empty? signal)
      []
-     (let [;; Dynamic threshold (30% of mean amplitude)
+     (let [;; Dynamic threshold (personalized fraction of mean amplitude)
            mean-amplitude (/ (reduce + signal) (count signal))
-           threshold (* 0.3 mean-amplitude)
+           threshold (* threshold-fraction mean-amplitude)
 
            ;; Find low regions
            regions (find-below-threshold signal threshold)
@@ -421,12 +429,13 @@
   "Generate coaching insights from breathing analysis.
 
   Creates natural language recommendations based on:
-  - Breathing rate (too fast/slow/normal)
+  - Breathing rate (too fast/slow/normal, or delta from personal baseline)
   - Depth score (shallow/deep)
   - Fatigue windows (breath holds)
 
   Args:
-    analysis-map: Map with :rate-bpm, :depth-score, :fatigue-windows
+    analysis-map: Map with :rate-bpm, :depth-score, :fatigue-windows, :delta-from-baseline, etc.
+    user-profile: (optional) User profile with baseline for personalized insights
 
   Returns:
     Vector of insight maps with:
@@ -435,84 +444,132 @@
       :insight/severity - :low, :medium, :high
       :insight/recommendation - Actionable advice
 
-  Example:
+  Example (no profile):
     (generate-insights {:rate-bpm 28
                         :depth-score 0.4
-                        :fatigue-windows [{:start-ms 45000 :end-ms 48000}]})
-    ;; => [{:insight/title \"Elevated breathing rate\" ...}
-    ;;     {:insight/title \"Shallow breathing detected\" ...}
-    ;;     {:insight/title \"Breath hold at 00:45\" ...}]"
-  [{:keys [rate-bpm depth-score fatigue-windows confidence]}]
-  (let [insights (atom [])]
+                        :fatigue-windows [{:start-ms 45000 :end-ms 48000}]}
+                       nil)
+    ;; => [{:insight/title \"Elevated breathing rate\" ...}]
 
-    ;; Insight 1: Breathing rate analysis
-    (when (and rate-bpm (> confidence 0.5))
-      (cond
-        ;; Very fast breathing (>25 bpm)
-        (> rate-bpm 25)
-        (swap! insights conj
-               {:insight/title "Elevated breathing rate"
-                :insight/description (str "Breathing rate of " (int rate-bpm) " bpm is higher than typical resting rate (12-20 bpm)")
-                :insight/severity :medium
-                :insight/recommendation "Focus on slower, controlled breathing. Try 4-count inhale, 6-count exhale."})
+  Example (with profile):
+    (generate-insights {:rate-bpm 26
+                        :baseline-rate 22
+                        :delta-from-baseline 4
+                        :pct-change 18.2
+                        :fatigue-windows []}
+                       user-profile)
+    ;; => [{:insight/title \"Breathing rate elevated\"
+    ;;      :insight/description \"Your rate is 18% above your baseline of 22 bpm\" ...}]"
+  ([analysis-map]
+   (generate-insights analysis-map nil))
+  ([{:keys [rate-bpm depth-score fatigue-windows confidence
+            baseline-rate delta-from-baseline pct-change]}
+    user-profile]
+   (let [insights (atom [])]
 
-        ;; Very slow breathing (<8 bpm)
-        (< rate-bpm 8)
-        (swap! insights conj
-               {:insight/title "Very slow breathing detected"
-                :insight/description (str "Breathing rate of " (int rate-bpm) " bpm is unusually low")
-                :insight/severity :low
-                :insight/recommendation "Ensure you're breathing naturally. Breath holds may be affecting the measurement."})
+     ;; Insight 1: Breathing rate analysis (personalized if profile exists)
+     (when (and rate-bpm (> confidence 0.5))
+       (if (and user-profile baseline-rate delta-from-baseline)
+         ;; PERSONALIZED INSIGHT (with baseline comparison)
+         (let [abs-pct (js/Math.abs pct-change)]
+           (cond
+             ;; Significantly elevated (>15% above baseline)
+             (and (pos? delta-from-baseline) (> abs-pct 15))
+             (swap! insights conj
+                    {:insight/title "Breathing rate elevated"
+                     :insight/description (str "Your rate of " (int rate-bpm) " bpm is "
+                                              (int abs-pct) "% above your baseline of "
+                                              (int baseline-rate) " bpm")
+                     :insight/severity (if (> abs-pct 25) :high :medium)
+                     :insight/recommendation "Focus on slower, controlled breathing to return to your baseline pace."})
 
-        ;; Normal range (12-20 bpm)
-        (and (>= rate-bpm 12) (<= rate-bpm 20))
-        (swap! insights conj
-               {:insight/title "Normal breathing rate"
-                :insight/description (str "Breathing rate of " (int rate-bpm) " bpm is within healthy resting range (12-20 bpm)")
-                :insight/severity :low
-                :insight/recommendation "Maintain this steady breathing pattern during warm-up and recovery."})))
+             ;; Significantly lowered (>15% below baseline)
+             (and (neg? delta-from-baseline) (> abs-pct 15))
+             (swap! insights conj
+                    {:insight/title "Breathing rate lowered"
+                     :insight/description (str "Your rate of " (int rate-bpm) " bpm is "
+                                              (int abs-pct) "% below your baseline of "
+                                              (int baseline-rate) " bpm")
+                     :insight/severity :low
+                     :insight/recommendation "Good recovery breathing. This is slower than your typical pace."})
 
-    ;; Insight 2: Depth score analysis
-    (when (and depth-score (> confidence 0.5))
-      (cond
-        ;; Shallow breathing (<0.5)
-        (< depth-score 0.5)
-        (swap! insights conj
-               {:insight/title "Shallow breathing detected"
-                :insight/description (str "Breathing depth score of " (int (* depth-score 100)) "% indicates limited torso expansion")
-                :insight/severity :medium
-                :insight/recommendation "Practice diaphragmatic breathing. Focus on belly expansion rather than chest."})
+             ;; Within baseline range (±15%)
+             :else
+             (swap! insights conj
+                    {:insight/title "Breathing rate normal"
+                     :insight/description (str "Your rate of " (int rate-bpm) " bpm is within "
+                                              (int abs-pct) "% of your baseline of "
+                                              (int baseline-rate) " bpm")
+                     :insight/severity :low
+                     :insight/recommendation "Maintain this steady breathing pattern."})))
 
-        ;; Good depth (>0.7)
-        (> depth-score 0.7)
-        (swap! insights conj
-               {:insight/title "Strong breathing depth"
-                :insight/description (str "Breathing depth score of " (int (* depth-score 100)) "% shows good torso expansion")
-                :insight/severity :low
-                :insight/recommendation "Excellent. Maintain this breathing pattern during training."})))
+         ;; GENERIC INSIGHT (no baseline)
+         (cond
+           ;; Very fast breathing (>25 bpm)
+           (> rate-bpm 25)
+           (swap! insights conj
+                  {:insight/title "Elevated breathing rate"
+                   :insight/description (str "Breathing rate of " (int rate-bpm) " bpm is higher than typical resting rate (12-20 bpm)")
+                   :insight/severity :medium
+                   :insight/recommendation "Focus on slower, controlled breathing. Try 4-count inhale, 6-count exhale."})
 
-    ;; Insight 3: Fatigue windows (breath holds)
-    (when (seq fatigue-windows)
-      (doseq [window fatigue-windows]
-        (let [duration-ms (- (:end-ms window) (:start-ms window))
-              duration-s (/ duration-ms 1000.0)
-              severity (:severity window)
-              start-time (format-timestamp (:start-ms window))]
-          (swap! insights conj
-                 {:insight/title (str "Breath disruption at " start-time)
-                  :insight/description (str "Breathing stopped or became very shallow for "
-                                           (format "%.1f" duration-s) " seconds "
-                                           "(severity: " (int (* severity 100)) "%)")
-                  :insight/severity (cond
-                                     (> severity 0.8) :high
-                                     (> severity 0.5) :medium
-                                     :else :low)
-                  :insight/recommendation (if (> duration-s 3)
-                                           "Extended breath hold detected. Monitor breathing during high-intensity movements."
-                                           "Brief breathing disruption. May indicate movement transition or exertion.")}))))
+           ;; Very slow breathing (<8 bpm)
+           (< rate-bpm 8)
+           (swap! insights conj
+                  {:insight/title "Very slow breathing detected"
+                   :insight/description (str "Breathing rate of " (int rate-bpm) " bpm is unusually low")
+                   :insight/severity :low
+                   :insight/recommendation "Ensure you're breathing naturally. Breath holds may be affecting the measurement."})
 
-    ;; Return insights (or empty vector if none generated)
-    @insights))
+           ;; Normal range (12-20 bpm)
+           (and (>= rate-bpm 12) (<= rate-bpm 20))
+           (swap! insights conj
+                  {:insight/title "Normal breathing rate"
+                   :insight/description (str "Breathing rate of " (int rate-bpm) " bpm is within healthy resting range (12-20 bpm)")
+                   :insight/severity :low
+                   :insight/recommendation "Maintain this steady breathing pattern during warm-up and recovery."}))))
+
+     ;; Insight 2: Depth score analysis
+     (when (and depth-score (> confidence 0.5))
+       (cond
+         ;; Shallow breathing (<0.5)
+         (< depth-score 0.5)
+         (swap! insights conj
+                {:insight/title "Shallow breathing detected"
+                 :insight/description (str "Breathing depth score of " (int (* depth-score 100)) "% indicates limited torso expansion")
+                 :insight/severity :medium
+                 :insight/recommendation "Practice diaphragmatic breathing. Focus on belly expansion rather than chest."})
+
+         ;; Good depth (>0.7)
+         (> depth-score 0.7)
+         (swap! insights conj
+                {:insight/title "Strong breathing depth"
+                 :insight/description (str "Breathing depth score of " (int (* depth-score 100)) "% shows good torso expansion")
+                 :insight/severity :low
+                 :insight/recommendation "Excellent. Maintain this breathing pattern during training."})))
+
+     ;; Insight 3: Fatigue windows (breath holds)
+     (when (seq fatigue-windows)
+       (doseq [window fatigue-windows]
+         (let [duration-ms (- (:end-ms window) (:start-ms window))
+               duration-s (/ duration-ms 1000.0)
+               severity (:severity window)
+               start-time (format-timestamp (:start-ms window))]
+           (swap! insights conj
+                  {:insight/title (str "Breath disruption at " start-time)
+                   :insight/description (str "Breathing stopped or became very shallow for "
+                                            (format "%.1f" duration-s) " seconds "
+                                            "(severity: " (int (* severity 100)) "%)")
+                   :insight/severity (cond
+                                      (> severity 0.8) :high
+                                      (> severity 0.5) :medium
+                                      :else :low)
+                   :insight/recommendation (if (> duration-s 3)
+                                            "Extended breath hold detected. Monitor breathing during high-intensity movements."
+                                            "Brief breathing disruption. May indicate movement transition or exertion.")}))))
+
+     ;; Return insights (or empty vector if none generated)
+     @insights)))
 
 ;; ============================================================
 ;; MAIN ANALYZER (Pure function: session → session)
@@ -525,40 +582,68 @@
   1. Extract torso motion signal from pose timeline
   2. Detect breathing rate and depth via FFT
   3. Detect fatigue windows (breath holds)
-  4. Generate coaching insights
+  4. Generate coaching insights (personalized if user-profile provided)
 
-  Input: session map with :session/timeline
+  Input:
+    session: Session map with :session/timeline
+    user-profile: (optional) User profile with learned thresholds and baselines
+
   Output: same session with :session/analysis populated
 
   This is a PURE FUNCTION - no side effects, fully testable.
 
-  Example:
+  Example (no profile):
     (def session {:session/timeline [... 900 frames ...]})
     (def analyzed (analyze session))
     (get-in analyzed [:session/analysis :breathing :rate-bpm])
-    ;; => 21.8"
-  [session]
-  (let [timeline (:session/timeline session)
+    ;; => 21.8
 
-        ;; Step 1: Extract torso motion signal
-        torso-signal (extract-torso-motion timeline)
+  Example (with profile):
+    (def analyzed (analyze session user-profile))
+    (get-in analyzed [:session/analysis :breathing :delta-from-baseline])
+    ;; => 4.2 (current rate is 4.2 bpm above user's baseline)"
+  ([session]
+   (analyze session nil))
+  ([session user-profile]
+   (let [timeline (:session/timeline session)
 
-        ;; Step 2: Detect breathing rate and depth (FFT analysis)
-        rate-analysis (detect-breathing-rate torso-signal)
+         ;; Step 1: Extract torso motion signal
+         torso-signal (extract-torso-motion timeline)
 
-        ;; Step 3: Detect fatigue windows (breath holds)
-        fatigue-windows (detect-fatigue-windows torso-signal)
+         ;; Step 2: Detect breathing rate and depth (FFT analysis)
+         rate-analysis (detect-breathing-rate torso-signal)
+         rate-bpm (:rate-bpm rate-analysis)
+         depth-score (:depth-score rate-analysis)
 
-        ;; Step 4: Combine all metrics for insight generation
-        complete-analysis (assoc rate-analysis :fatigue-windows fatigue-windows)
+         ;; Step 3: Get thresholds from profile or use defaults
+         fatigue-threshold (if user-profile
+                             (get-in user-profile
+                                     [:learned-thresholds :breathing-thresholds :fatigue-threshold])
+                             0.3) ;; Default: 30% drop in amplitude
 
-        ;; Step 5: Generate coaching insights
-        insights (generate-insights complete-analysis)]
+         ;; Step 4: Detect fatigue windows using personalized threshold
+         fatigue-windows (detect-fatigue-windows torso-signal fatigue-threshold)
 
-    ;; Return new session with analysis populated
-    (assoc-in session
-              [:session/analysis :breathing]
-              (assoc complete-analysis :insights insights))))
+         ;; Step 5: Compute delta from baseline (if profile exists)
+         baseline-rate (when user-profile
+                         (get-in user-profile [:breathing-baseline :typical-rate-bpm]))
+         delta-rate (when baseline-rate (- rate-bpm baseline-rate))
+         pct-change (when baseline-rate (* 100 (/ delta-rate baseline-rate)))
+
+         ;; Step 6: Combine all metrics
+         complete-analysis (merge rate-analysis
+                                  {:fatigue-windows fatigue-windows
+                                   :baseline-rate baseline-rate
+                                   :delta-from-baseline delta-rate
+                                   :pct-change pct-change})
+
+         ;; Step 7: Generate coaching insights (personalized if profile provided)
+         insights (generate-insights complete-analysis user-profile)]
+
+     ;; Return new session with analysis populated
+     (assoc-in session
+               [:session/analysis :breathing]
+               (assoc complete-analysis :insights insights)))))
 
 ;; ============================================================
 ;; TESTING HELPERS
