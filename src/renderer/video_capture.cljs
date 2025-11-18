@@ -1,14 +1,16 @@
 (ns combatsys.renderer.video-capture
-  "Video capture and display component.
+  "Video capture and display component with MediaPipe pose estimation.
 
    Philosophy (Reagent + Side Effects):
    - Lifecycle methods for camera init/cleanup
    - Frame capture loop using requestAnimationFrame
+   - MediaPipe pose estimation integrated into capture loop
    - FPS monitoring for performance diagnostics
    - Clean separation: rendering (pure) vs capture (imperative)"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [combatsys.renderer.camera :as camera]
+            [combatsys.renderer.mediapipe :as mediapipe]
             [combatsys.renderer.state :as state]))
 
 ;; ============================================================
@@ -63,7 +65,7 @@
                            (reset! camera-active? false)
                            (js/console.log "Camera cleaned up")))
 
-        ;; Camera initialization
+        ;; Camera initialization with MediaPipe detector
         start-camera! (fn []
                        (-> (camera/init-camera! {:width 640 :height 480 :fps 30})
                            (.then (fn [handle]
@@ -79,15 +81,29 @@
                                     ;; Log camera info
                                     (camera/log-camera-info handle)
 
-                                    ;; Dispatch event
-                                    (rf/dispatch [::state/camera-started handle])))
-                           (.catch (fn [error]
-                                     (let [msg (camera/camera-error-message error)]
-                                       (reset! error-msg msg)
-                                       (js/console.error "Camera start failed:" msg)
-                                       (rf/dispatch [::state/camera-error error]))))))
+                                    ;; Dispatch camera event
+                                    (rf/dispatch [::state/camera-started handle])
 
-        ;; Frame capture loop
+                                    ;; Initialize MediaPipe detector
+                                    (rf/dispatch [::state/detector-initializing])
+                                    (mediapipe/init-detector!)))
+
+                           (.then (fn [detector]
+                                    (js/console.log "MediaPipe detector ready")
+                                    (rf/dispatch [::state/detector-ready])
+                                    (mediapipe/log-detector-info)))
+
+                           (.catch (fn [error]
+                                     (let [msg (if (= (:error/type error) :initialization-failed)
+                                                (mediapipe/pose-error-message error)
+                                                (camera/camera-error-message error))]
+                                       (reset! error-msg msg)
+                                       (js/console.error "Startup failed:" msg)
+                                       (if (= (:error/type error) :initialization-failed)
+                                         (rf/dispatch [::state/detector-error error])
+                                         (rf/dispatch [::state/camera-error error])))))))
+
+        ;; Frame capture loop with pose estimation
         capture-loop! (fn capture-loop! []
                        (when @camera-active?
                          ;; Update FPS counter
@@ -95,16 +111,32 @@
                            (swap! frame-times #(take-last 30 (conj % now)))
                            (reset! current-fps (calculate-fps @frame-times)))
 
-                         ;; Capture frame (with frame skipping)
+                         ;; Capture frame and estimate pose (with frame skipping)
                          (when (and capture-enabled?
                                    (zero? (mod @frame-count @frame-skip)))
                            (when-let [video-elem @video-ref]
                              (when-let [frame (camera/capture-frame! video-elem)]
-                               ;; Call callback if provided
-                               (when on-frame-captured
-                                 (on-frame-captured frame))
+                               ;; Estimate pose from frame
+                               (when (mediapipe/detector-ready?)
+                                 (-> (mediapipe/estimate-pose! (:canvas frame))
+                                     (.then (fn [pose]
+                                              (if pose
+                                                (do
+                                                  ;; Pose detected - dispatch to state
+                                                  (rf/dispatch [::state/pose-detected pose])
+                                                  ;; Call callback with frame + pose
+                                                  (when on-frame-captured
+                                                    (on-frame-captured (assoc frame :pose pose))))
+                                                ;; No pose detected
+                                                (do
+                                                  (rf/dispatch [::state/no-pose-detected])
+                                                  ;; Still call callback with frame
+                                                  (when on-frame-captured
+                                                    (on-frame-captured frame))))))
+                                     (.catch (fn [error]
+                                               (js/console.warn "Pose estimation error:" error)))))
 
-                               ;; Dispatch to re-frame
+                               ;; Dispatch frame captured
                                (rf/dispatch [::state/camera-frame-captured frame]))))
 
                          ;; Increment counter
@@ -178,6 +210,20 @@
           [:div {:style {:font-size "12px"
                         :color "#666"}}
            (str "FPS: " @current-fps " | Frames: " @frame-count)]
+
+          ;; Pose detector status
+          (let [detector-status @(rf/subscribe [::state/detector-status])
+                pose-count @(rf/subscribe [::state/pose-count])]
+            [:div {:style {:font-size "11px"
+                          :color (case detector-status
+                                   :ready "#4CAF50"
+                                   :loading "#FF9800"
+                                   :error "#f44336"
+                                   "#999")
+                          :font-weight "bold"}}
+             (str "Pose: " (name detector-status)
+                  (when (= detector-status :ready)
+                    (str " (" pose-count ")")))])
 
           ;; Capture indicator
           (when (and capture-enabled? @camera-active?)

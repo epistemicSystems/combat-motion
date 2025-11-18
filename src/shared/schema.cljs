@@ -12,17 +12,24 @@
 ;; ============================================================
 
 (def landmark-ids
-  "MediaPipe-style body landmark identifiers"
-  #{:nose
-    :left-eye :right-eye
+  "MediaPipe BlazePose 33 landmark identifiers.
+   See: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker"
+  #{;; Face (5)
+    :nose
+    :left-eye-inner :left-eye :left-eye-outer
+    :right-eye-inner :right-eye :right-eye-outer
     :left-ear :right-ear
     :mouth-left :mouth-right
+
+    ;; Upper body (10)
     :left-shoulder :right-shoulder
     :left-elbow :right-elbow
     :left-wrist :right-wrist
     :left-pinky :right-pinky
     :left-index :right-index
     :left-thumb :right-thumb
+
+    ;; Lower body (10)
     :left-hip :right-hip
     :left-knee :right-knee
     :left-ankle :right-ankle

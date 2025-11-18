@@ -33,6 +33,12 @@
     :fps 0 ;; Current FPS
     :frame-count 0} ;; Total frames captured
 
+   :pose-detector
+   {:status :not-initialized ;; :not-initialized | :loading | :ready | :error
+    :error nil ;; Last detector error
+    :last-pose nil ;; Most recent pose detected
+    :pose-count 0} ;; Total poses estimated
+
    :capture
    {:mode :idle ;; :idle | :recording | :processing
     :current-frame nil
@@ -191,6 +197,48 @@
    (assoc-in db [:camera :fps] fps)))
 
 ;; ============================================================
+;; MEDIAPIPE / POSE DETECTOR EVENTS
+;; ============================================================
+
+(rf/reg-event-db
+ ::detector-initializing
+ (fn [db _]
+   (println "MediaPipe detector initializing...")
+   (-> db
+       (assoc-in [:pose-detector :status] :loading)
+       (assoc-in [:pose-detector :error] nil))))
+
+(rf/reg-event-db
+ ::detector-ready
+ (fn [db _]
+   (println "MediaPipe detector ready")
+   (-> db
+       (assoc-in [:pose-detector :status] :ready)
+       (assoc-in [:pose-detector :error] nil))))
+
+(rf/reg-event-db
+ ::detector-error
+ (fn [db [_ error]]
+   (println "MediaPipe detector error:" error)
+   (-> db
+       (assoc-in [:pose-detector :status] :error)
+       (assoc-in [:pose-detector :error] error))))
+
+(rf/reg-event-db
+ ::pose-detected
+ (fn [db [_ pose]]
+   ;; Store last pose and increment counter
+   (-> db
+       (assoc-in [:pose-detector :last-pose] pose)
+       (update-in [:pose-detector :pose-count] inc))))
+
+(rf/reg-event-db
+ ::no-pose-detected
+ (fn [db _]
+   ;; Clear last pose when no person detected
+   (assoc-in db [:pose-detector :last-pose] nil)))
+
+;; ============================================================
 ;; SUBSCRIPTIONS (Read from state)
 ;; ============================================================
 
@@ -289,3 +337,32 @@
  ::camera-frame-count
  (fn [db _]
    (get-in db [:camera :frame-count])))
+
+;; ============================================================
+;; POSE DETECTOR SUBSCRIPTIONS
+;; ============================================================
+
+(rf/reg-sub
+ ::detector-status
+ (fn [db _]
+   (get-in db [:pose-detector :status])))
+
+(rf/reg-sub
+ ::detector-ready?
+ (fn [db _]
+   (= :ready (get-in db [:pose-detector :status]))))
+
+(rf/reg-sub
+ ::detector-error
+ (fn [db _]
+   (get-in db [:pose-detector :error])))
+
+(rf/reg-sub
+ ::last-pose
+ (fn [db _]
+   (get-in db [:pose-detector :last-pose])))
+
+(rf/reg-sub
+ ::pose-count
+ (fn [db _]
+   (get-in db [:pose-detector :pose-count])))
