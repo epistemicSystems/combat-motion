@@ -49,6 +49,47 @@
    (and landmark
         (>= (:landmark/confidence landmark 0) threshold))))
 
+(defn compute-distance
+  "Compute 3D Euclidean distance between two landmarks.
+
+  Args:
+    lm1: First landmark map with :landmark/x :landmark/y :landmark/z
+    lm2: Second landmark map
+
+  Returns:
+    Distance as number, or nil if either landmark is missing
+
+  Example:
+    (compute-distance
+      {:landmark/x 0.4 :landmark/y 0.2 :landmark/z 0.0}
+      {:landmark/x 0.6 :landmark/y 0.2 :landmark/z 0.0})
+    => 0.2"
+  [lm1 lm2]
+  (when (and lm1 lm2)
+    (let [dx (- (:landmark/x lm2) (:landmark/x lm1))
+          dy (- (:landmark/y lm2) (:landmark/y lm1))
+          dz (- (:landmark/z lm2) (:landmark/z lm1))]
+      (js/Math.sqrt (+ (* dx dx) (* dy dy) (* dz dz))))))
+
+(defn compute-distance-by-id
+  "Compute distance between two landmarks in a pose by their IDs.
+
+  Args:
+    pose: Pose map with :pose/landmarks vector
+    id1: First landmark ID keyword
+    id2: Second landmark ID keyword
+
+  Returns:
+    Distance as number, or nil if either landmark not found
+
+  Example:
+    (compute-distance-by-id pose :left-shoulder :right-shoulder)
+    => 0.234"
+  [pose id1 id2]
+  (let [lm1 (get-landmark pose id1)
+        lm2 (get-landmark pose id2)]
+    (compute-distance lm1 lm2)))
+
 (defn all-landmarks-visible?
   "Check if all given landmarks meet confidence threshold.
 
