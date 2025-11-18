@@ -9,7 +9,8 @@
             [re-frame.core :as rf]
             [combatsys.renderer.state :as state]
             [combatsys.renderer.video-capture :as video]
-            [combatsys.renderer.onboarding :as onboarding]))
+            [combatsys.renderer.onboarding :as onboarding]
+            [combatsys.renderer.profile-view :as profile]))
 
 ;; ============================================================
 ;; UTILITY COMPONENTS
@@ -504,6 +505,9 @@
       [button {:label "Calibration..."
                :on-click #(rf/dispatch [::state/calibration/start-wizard])}]
 
+      [button {:label "Profile"
+               :on-click #(rf/dispatch [::state/set-view :profile])}]
+
       [button {:label (if (= mode :recording) "Stop Recording" "Start Recording")
                :on-click #(rf/dispatch [(if (= mode :recording)
                                           ::state/stop-recording
@@ -532,9 +536,18 @@
         current-tab @(rf/subscribe [::state/analysis-tab])
         available-tabs @(rf/subscribe [::state/available-analysis-tabs])]
 
-    ;; Route to calibration wizard if active
-    (if (= current-view :calibration)
+    ;; Route based on current view
+    (cond
+      ;; Calibration wizard
+      (= current-view :calibration)
       [onboarding/calibration-wizard]
+
+      ;; Profile view
+      (= current-view :profile)
+      [profile/profile-view]
+
+      ;; Main analysis view (default)
+      :else
 
       ;; Otherwise show main analysis view
       [:div {:style {:font-family "system-ui, -apple-system, sans-serif"
@@ -621,4 +634,4 @@
                        :color "#999"}}
          [:p "No analyses available yet."]
          [:p {:style {:font-size "12px"}}
-          "Load a demo session or record a new one, then click 'Analyze All'."]])]]])))  ;; Close if statement)
+          "Load a demo session or record a new one, then click 'Analyze All'."]])]]])))  ;; Close cond statement
