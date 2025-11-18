@@ -13,7 +13,10 @@
             [combatsys.breathing :as breathing]
             [combatsys.posture :as posture]
             [combatsys.renderer.persistence :as persist]
-            [combatsys.renderer.files :as files]))
+            [combatsys.renderer.files :as files]
+            [combatsys.renderer.video :as video]
+            [combatsys.renderer.magnification :as mag]
+            [combatsys.renderer.gpu :as gpu]))
 
 ;; ============================================================
 ;; INITIAL STATE
@@ -58,7 +61,21 @@
    :feedback
    {:cues-queue [] ;; Audio cues to play
     :recent-events [] ;; Last 10 events
-    :alerts []}})
+    :alerts []}
+
+   :magnification
+   {:first-frame nil ;; First frame for ROI selection {:frame Uint8ClampedArray :width :height}
+    :roi nil ;; Selected ROI {:x :y :width :height}
+    :original-frames nil ;; Vector of decoded frames
+    :magnified-frames nil ;; Vector of magnified frames
+    :processing? false ;; Is magnification in progress?
+    :progress 0.0 ;; Progress 0.0 → 1.0
+    :playback
+    {:playing? false
+     :current-frame-index 0
+     :view-mode :side-by-side} ;; :original | :magnified | :side-by-side
+    :metadata nil ;; {:width :height :fps :frame-count}
+    :error nil}})
 
 ;; ============================================================
 ;; EVENTS (State updates - all pure functions)
@@ -513,3 +530,227 @@
  ::saved-sessions-metadata
  (fn [db _]
    (get-in db [:saved-sessions :sessions-by-id] {})))
+
+;; ============================================================
+;; MAGNIFICATION EVENTS
+;; ============================================================
+
+(rf/reg-event-fx
+ ::magnification/load-first-frame
+ (fn [{:keys [db]} [_ session-id]]
+   (println "Loading first frame for ROI selection...")
+   (let [session (get-in db [:sessions session-id])
+         video-path (get-in session [:session/video-path])]
+     (if video-path
+       ;; Load first frame from video
+       (do
+         (-> (video/get-first-frame! video-path)
+             (.then (fn [result]
+                      (rf/dispatch [::magnification/first-frame-loaded result])))
+             (.catch (fn [err]
+                       (rf/dispatch [::magnification/error (str "Failed to load video: " (.-message err))]))))
+         {:db db})
+       ;; No video path, use first frame from timeline if available
+       (let [first-frame (first (get-in session [:session/timeline]))]
+         (if first-frame
+           {:db (assoc-in db [:magnification :first-frame]
+                         {:frame (:frame/pixels first-frame)
+                          :width (:frame/width first-frame)
+                          :height (:frame/height first-frame)})}
+           {:db (assoc-in db [:magnification :error] "No video or frames available")}))))))
+
+(rf/reg-event-db
+ ::magnification/first-frame-loaded
+ (fn [db [_ result]]
+   (println "First frame loaded:" (:width result) "×" (:height result))
+   (assoc-in db [:magnification :first-frame] result)))
+
+(rf/reg-event-db
+ ::magnification/roi-selected
+ (fn [db [_ roi]]
+   (println "ROI selected:" roi)
+   (assoc-in db [:magnification :roi] roi)))
+
+(rf/reg-event-fx
+ ::magnification/start
+ (fn [{:keys [db]} [_ session-id gain blur?]]
+   (println "Starting magnification pipeline...")
+   (let [session (get-in db [:sessions session-id])
+         video-path (get-in session [:session/video-path])
+         roi (get-in db [:magnification :roi])]
+
+     (if-not roi
+       {:db (assoc-in db [:magnification :error] "No ROI selected")}
+
+       (do
+         ;; Step 1: Initialize GPU
+         (-> (gpu/init-gpu!)
+             (.then (fn [gpu-ctx]
+                      ;; Step 2: Decode video
+                      (-> (video/decode-video! video-path
+                                              {:fps 15
+                                               :on-progress #(rf/dispatch [::magnification/update-progress :decode %])})
+                          (.then (fn [result]
+                                   (let [{:keys [frames width height fps]} result]
+                                     (println "Decoded" (count frames) "frames")
+                                     ;; Store decoded frames
+                                     (rf/dispatch [::magnification/frames-decoded frames width height fps])
+
+                                     ;; Step 3: Magnify frames
+                                     (-> (mag/magnify-frames! gpu-ctx frames width height
+                                                             {:gain gain
+                                                              :blur? blur?})
+                                         (.then (fn [magnified-frames]
+                                                  (println "Magnification complete!")
+                                                  (rf/dispatch [::magnification/complete magnified-frames])
+                                                  ;; Cleanup GPU
+                                                  (gpu/release-gpu! gpu-ctx)))
+                                         (.catch (fn [err]
+                                                   (gpu/release-gpu! gpu-ctx)
+                                                   (rf/dispatch [::magnification/error
+                                                                (str "Magnification failed: " (.-message err))])))))))
+                          (.catch (fn [err]
+                                    (gpu/release-gpu! gpu-ctx)
+                                    (rf/dispatch [::magnification/error
+                                                 (str "Video decode failed: " (.-message err))])))))))
+             (.catch (fn [err]
+                       (rf/dispatch [::magnification/error
+                                    (str "GPU init failed: " (.-message err))]))))
+
+         ;; Update state to show processing
+         {:db (-> db
+                  (assoc-in [:magnification :processing?] true)
+                  (assoc-in [:magnification :progress] 0.0)
+                  (assoc-in [:magnification :error] nil))})))))
+
+(rf/reg-event-db
+ ::magnification/frames-decoded
+ (fn [db [_ frames width height fps]]
+   (println "Storing" (count frames) "decoded frames")
+   (-> db
+       (assoc-in [:magnification :original-frames] frames)
+       (assoc-in [:magnification :metadata] {:width width
+                                             :height height
+                                             :fps fps
+                                             :frame-count (count frames)})
+       (assoc-in [:magnification :progress] 0.5)))) ;; Decode = 50% of work
+
+(rf/reg-event-db
+ ::magnification/update-progress
+ (fn [db [_ stage progress]]
+   (let [;; Decode = 0-50%, Magnify = 50-100%
+         total-progress (case stage
+                         :decode (* progress 0.5)
+                         :magnify (+ 0.5 (* progress 0.5))
+                         progress)]
+     (assoc-in db [:magnification :progress] total-progress))))
+
+(rf/reg-event-db
+ ::magnification/complete
+ (fn [db [_ magnified-frames]]
+   (println "Magnification complete with" (count magnified-frames) "frames")
+   (-> db
+       (assoc-in [:magnification :magnified-frames] magnified-frames)
+       (assoc-in [:magnification :processing?] false)
+       (assoc-in [:magnification :progress] 1.0))))
+
+(rf/reg-event-db
+ ::magnification/error
+ (fn [db [_ error-msg]]
+   (js/console.error "Magnification error:" error-msg)
+   (-> db
+       (assoc-in [:magnification :error] error-msg)
+       (assoc-in [:magnification :processing?] false))))
+
+(rf/reg-event-db
+ ::magnification/toggle-playback
+ (fn [db _]
+   (update-in db [:magnification :playback :playing?] not)))
+
+(rf/reg-event-db
+ ::magnification/seek-frame
+ (fn [db [_ frame-index]]
+   (assoc-in db [:magnification :playback :current-frame-index] frame-index)))
+
+(rf/reg-event-db
+ ::magnification/set-view-mode
+ (fn [db [_ view-mode]]
+   (assoc-in db [:magnification :playback :view-mode] view-mode)))
+
+(rf/reg-event-db
+ ::magnification/reset
+ (fn [db _]
+   (assoc db :magnification
+          {:first-frame nil
+           :roi nil
+           :original-frames nil
+           :magnified-frames nil
+           :processing? false
+           :progress 0.0
+           :playback {:playing? false
+                     :current-frame-index 0
+                     :view-mode :side-by-side}
+           :metadata nil
+           :error nil})))
+
+;; ============================================================
+;; MAGNIFICATION SUBSCRIPTIONS
+;; ============================================================
+
+(rf/reg-sub
+ ::magnification/first-frame
+ (fn [db _]
+   (get-in db [:magnification :first-frame])))
+
+(rf/reg-sub
+ ::magnification/roi
+ (fn [db _]
+   (get-in db [:magnification :roi])))
+
+(rf/reg-sub
+ ::magnification/original-frames
+ (fn [db _]
+   (get-in db [:magnification :original-frames])))
+
+(rf/reg-sub
+ ::magnification/magnified-frames
+ (fn [db _]
+   (get-in db [:magnification :magnified-frames])))
+
+(rf/reg-sub
+ ::magnification/processing?
+ (fn [db _]
+   (get-in db [:magnification :processing?])))
+
+(rf/reg-sub
+ ::magnification/progress
+ (fn [db _]
+   (get-in db [:magnification :progress])))
+
+(rf/reg-sub
+ ::magnification/playback-state
+ (fn [db _]
+   (get-in db [:magnification :playback])))
+
+(rf/reg-sub
+ ::magnification/metadata
+ (fn [db _]
+   (get-in db [:magnification :metadata])))
+
+(rf/reg-sub
+ ::magnification/error
+ (fn [db _]
+   (get-in db [:magnification :error])))
+
+(rf/reg-sub
+ ::magnification/current-frame
+ :<- [::magnification/playback-state]
+ :<- [::magnification/original-frames]
+ :<- [::magnification/magnified-frames]
+ (fn [[playback original-frames magnified-frames] _]
+   (let [{:keys [current-frame-index view-mode]} playback]
+     (when (and original-frames magnified-frames)
+       {:original (nth original-frames current-frame-index nil)
+        :magnified (nth magnified-frames current-frame-index nil)
+        :view-mode view-mode
+        :index current-frame-index}))))
