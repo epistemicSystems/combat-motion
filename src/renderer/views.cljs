@@ -1,13 +1,14 @@
 (ns combatsys.renderer.views
   "Reagent UI components for the motion analysis platform.
-   
+
    Philosophy (Brett Victor):
    - Make invisible visible
    - Show reasoning, not just results
    - Immediate feedback"
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
-            [combatsys.renderer.state :as state]))
+            [combatsys.renderer.state :as state]
+            [combatsys.renderer.video-capture :as video]))
 
 ;; ============================================================
 ;; UTILITY COMPONENTS
@@ -318,25 +319,26 @@
 (defn main-view
   "Root component"
   []
-  [:div {:style {:font-family "system-ui, -apple-system, sans-serif"
-                 :height "100vh"
-                 :display "flex"
-                 :flex-direction "column"}}
-   
-   ;; Header
-   [:div {:style {:padding "20px"
-                  :background-color "#1a1a1a"
-                  :color "white"
-                  :text-align "center"}}
-    [:h1 {:style {:margin 0}}
-     "CombatSys Motion Analysis"]
-    [:p {:style {:margin "5px 0"
-                 :font-size "14px"
-                 :opacity 0.8}}
-     "Camera-only breathing, gait, and posture analysis"]]
-   
-   ;; Control panel
-   [control-panel]
+  (let [mode @(rf/subscribe [::state/capture-mode])]
+    [:div {:style {:font-family "system-ui, -apple-system, sans-serif"
+                   :height "100vh"
+                   :display "flex"
+                   :flex-direction "column"}}
+
+     ;; Header
+     [:div {:style {:padding "20px"
+                    :background-color "#1a1a1a"
+                    :color "white"
+                    :text-align "center"}}
+      [:h1 {:style {:margin 0}}
+       "CombatSys Motion Analysis"]
+      [:p {:style {:margin "5px 0"
+                   :font-size "14px"
+                   :opacity 0.8}}
+       "Camera-only breathing, gait, and posture analysis"]]
+
+     ;; Control panel
+     [control-panel]
    
    ;; Main content
    [:div {:style {:display "flex"
@@ -357,19 +359,31 @@
                    :display "flex"
                    :flex-direction "column"
                    :gap "15px"}}
-     
-     [panel "Skeleton View"
-      [skeleton-canvas]]
-     
+
+     ;; Live camera feed
+     [panel "Live Camera Feed"
+      [video/video-feed
+       {:capture-enabled? (= mode :recording)
+        :target-fps 15
+        :on-frame-captured (fn [frame]
+                            (when (= mode :recording)
+                              (rf/dispatch [::state/append-frame frame])))}]]
+
+     ;; Camera selector
+     [video/camera-selector
+      {:on-camera-selected (fn [camera-id]
+                            (println "Camera selected:" camera-id))}]
+
      [timeline-scrubber]]
     
-    ;; Right sidebar - metrics
-    [:div {:style {:width "350px"
-                   :padding "15px"
-                   :overflow-y "auto"
-                   :border-left "1px solid #ddd"
-                   :display "flex"
-                   :flex-direction "column"
-                   :gap "15px"}}
-     [breathing-metrics]
-     [posture-metrics]]]])
+     ;; Right sidebar - metrics
+     [:div {:style {:width "350px"
+                    :padding "15px"
+                    :overflow-y "auto"
+                    :border-left "1px solid #ddd"
+                    :display "flex"
+                    :flex-direction "column"
+                    :gap "15px"}}
+      [breathing-metrics]
+      [posture-metrics]]]]))
+
