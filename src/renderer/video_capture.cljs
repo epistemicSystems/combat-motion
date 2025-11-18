@@ -12,7 +12,8 @@
             [combatsys.renderer.camera :as camera]
             [combatsys.renderer.mediapipe :as mediapipe]
             [combatsys.renderer.state :as state]
-            [combatsys.shared.pose :as pose]))
+            [combatsys.shared.pose :as pose]
+            [combatsys.renderer.canvas :as canvas]))
 
 ;; ============================================================
 ;; FPS COUNTER (Pure)
@@ -126,13 +127,28 @@
                                                       enhanced-pose (pose/enhance-pose-with-angles
                                                                      raw-pose
                                                                      {:measure-time? true})]
+
+                                                  ;; Draw skeleton overlay on canvas (~1.6ms)
+                                                  (when @canvas-ref
+                                                    (let [ctx (.getContext @canvas-ref "2d")]
+                                                      ;; Clear previous skeleton
+                                                      (canvas/clear-canvas! ctx 640 480)
+                                                      ;; Draw new skeleton
+                                                      (canvas/draw-skeleton! ctx (:pose/landmarks enhanced-pose))
+                                                      ;; Optional: Draw pose info (debug)
+                                                      ;; (canvas/draw-pose-info! ctx enhanced-pose)
+                                                      ))
+
                                                   ;; Pose detected - dispatch enhanced pose to state
                                                   (rf/dispatch [::state/pose-detected enhanced-pose])
                                                   ;; Call callback with frame + enhanced pose
                                                   (when on-frame-captured
                                                     (on-frame-captured (assoc frame :pose enhanced-pose))))
-                                                ;; No pose detected
+                                                ;; No pose detected - clear skeleton
                                                 (do
+                                                  (when @canvas-ref
+                                                    (let [ctx (.getContext @canvas-ref "2d")]
+                                                      (canvas/clear-canvas! ctx 640 480)))
                                                   (rf/dispatch [::state/no-pose-detected])
                                                   ;; Still call callback with frame
                                                   (when on-frame-captured
