@@ -925,16 +925,41 @@
        (assoc-in [:capture :mode] :idle)
        (assoc-in [:ui :current-view] :live-feed))))
 
-(rf/reg-event-db
+(rf/reg-event-fx
  ::calibration/finish
- (fn [db _]
+ (fn [{:keys [db]} _]
    (println "Finishing calibration wizard...")
    (let [profile (get-in db [:calibration :completed-profile])]
-     (-> db
-         (assoc :user-profile profile)
-         (assoc-in [:calibration :active?] false)
-         (assoc-in [:calibration :current-step-idx] nil)
-         (assoc-in [:ui :current-view] :live-feed)))))
+     {:db (-> db
+              (assoc :user-profile profile)
+              (assoc-in [:calibration :active?] false)
+              (assoc-in [:calibration :current-step-idx] nil)
+              (assoc-in [:ui :current-view] :live-feed))
+      :dispatch [::user-profile/save profile]})))
+
+;; ============================================================
+;; USER PROFILE EVENTS
+;; ============================================================
+
+(rf/reg-event-db
+ ::user-profile/loaded
+ (fn [db [_ profile]]
+   (println "User profile loaded:" (:user-id profile))
+   (assoc db :user-profile profile)))
+
+(rf/reg-event-fx
+ ::user-profile/save
+ (fn [{:keys [db]} [_ profile]]
+   (println "Saving user profile to disk...")
+   (let [result (files/save-user-profile! profile)]
+     (if (:success? result)
+       (do
+         (println "Profile saved successfully:" (:file-path result))
+         {:db db})
+       (do
+         (js/console.error "Failed to save profile:" (:error result))
+         {:db (assoc-in db [:calibration :error]
+                       (str "Failed to save profile: " (:error result)))})))))
 
 ;; ============================================================
 ;; CALIBRATION WIZARD SUBSCRIPTIONS
