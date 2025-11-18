@@ -8,7 +8,8 @@
   (:require [reagent.core :as r]
             [re-frame.core :as rf]
             [combatsys.renderer.state :as state]
-            [combatsys.renderer.video-capture :as video]))
+            [combatsys.renderer.video-capture :as video]
+            [combatsys.renderer.onboarding :as onboarding]))
 
 ;; ============================================================
 ;; UTILITY COMPONENTS
@@ -500,6 +501,9 @@
       [button {:label "Load Demo Session"
                :on-click #(rf/dispatch [::state/load-demo-session])}]
 
+      [button {:label "Calibration..."
+               :on-click #(rf/dispatch [::state/calibration/start-wizard])}]
+
       [button {:label (if (= mode :recording) "Stop Recording" "Start Recording")
                :on-click #(rf/dispatch [(if (= mode :recording)
                                           ::state/stop-recording
@@ -521,30 +525,37 @@
 ;; ============================================================
 
 (defn main-view
-  "Root component"
+  "Root component - routes between different views"
   []
-  (let [mode @(rf/subscribe [::state/capture-mode])
+  (let [current-view @(rf/subscribe [::state/current-view])
+        mode @(rf/subscribe [::state/capture-mode])
         current-tab @(rf/subscribe [::state/analysis-tab])
         available-tabs @(rf/subscribe [::state/available-analysis-tabs])]
-    [:div {:style {:font-family "system-ui, -apple-system, sans-serif"
-                   :height "100vh"
-                   :display "flex"
-                   :flex-direction "column"}}
 
-     ;; Header
-     [:div {:style {:padding "20px"
-                    :background-color "#1a1a1a"
-                    :color "white"
-                    :text-align "center"}}
-      [:h1 {:style {:margin 0}}
-       "CombatSys Motion Analysis"]
-      [:p {:style {:margin "5px 0"
-                   :font-size "14px"
-                   :opacity 0.8}}
-       "Camera-only breathing, gait, and posture analysis"]]
+    ;; Route to calibration wizard if active
+    (if (= current-view :calibration)
+      [onboarding/calibration-wizard]
 
-     ;; Control panel
-     [control-panel]
+      ;; Otherwise show main analysis view
+      [:div {:style {:font-family "system-ui, -apple-system, sans-serif"
+                     :height "100vh"
+                     :display "flex"
+                     :flex-direction "column"}}
+
+       ;; Header
+       [:div {:style {:padding "20px"
+                      :background-color "#1a1a1a"
+                      :color "white"
+                      :text-align "center"}}
+        [:h1 {:style {:margin 0}}
+         "CombatSys Motion Analysis"]
+        [:p {:style {:margin "5px 0"
+                     :font-size "14px"
+                     :opacity 0.8}}
+         "Camera-only breathing, gait, and posture analysis"]]
+
+       ;; Control panel
+       [control-panel]
 
    ;; Main content
    [:div {:style {:display "flex"
@@ -610,4 +621,4 @@
                        :color "#999"}}
          [:p "No analyses available yet."]
          [:p {:style {:font-size "12px"}}
-          "Load a demo session or record a new one, then click 'Analyze All'."]])]]]))
+          "Load a demo session or record a new one, then click 'Analyze All'."]])]]])))  ;; Close if statement)
