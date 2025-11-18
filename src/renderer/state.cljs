@@ -11,7 +11,9 @@
             [combatsys.schema :as schema]
             [combatsys.mocks :as mocks]
             [combatsys.breathing :as breathing]
-            [combatsys.posture :as posture]))
+            [combatsys.posture :as posture]
+            [combatsys.renderer.persistence :as persist]
+            [combatsys.renderer.files :as files]))
 
 ;; ============================================================
 ;; INITIAL STATE
@@ -45,9 +47,13 @@
     :buffer [] ;; Last 30 frames for real-time analysis
     :recording-start-time nil}
 
-   :sessions {} ;; Map of session-id → session
+   :sessions {} ;; Map of session-id → session (in-memory, active session)
 
    :current-session-id nil
+
+   :saved-sessions
+   {:loaded-ids [] ;; List of session IDs available on disk
+    :sessions-by-id {}} ;; Map of session-id → lightweight session metadata
 
    :feedback
    {:cues-queue [] ;; Audio cues to play
@@ -366,3 +372,144 @@
  ::pose-count
  (fn [db _]
    (get-in db [:pose-detector :pose-count])))
+
+;; ============================================================
+;; SESSION RECORDING EVENTS
+;; ============================================================
+
+(rf/reg-event-db
+ ::start-session-recording
+ (fn [db [_ session-name]]
+   (println "Starting session recording:" session-name)
+   (let [new-session (persist/create-session (or session-name "Untitled Session"))
+         session-id (:session/id new-session)]
+     (-> db
+         (assoc-in [:capture :mode] :recording)
+         (assoc-in [:capture :recording-start-time] (.now js/Date))
+         (assoc :current-session-id session-id)
+         (assoc-in [:sessions session-id] new-session)))))
+
+(rf/reg-event-db
+ ::stop-session-recording
+ (fn [db _]
+   (println "Stopping session recording...")
+   (let [session-id (:current-session-id db)
+         session (get-in db [:sessions session-id])
+         ;; Finalize session with metadata
+         finalized-session (persist/finalize-session session)]
+     (-> db
+         (assoc-in [:capture :mode] :idle)
+         (assoc-in [:capture :recording-start-time] nil)
+         (assoc-in [:sessions session-id] finalized-session)))))
+
+(rf/reg-event-db
+ ::append-frame-to-recording
+ (fn [db [_ frame]]
+   (let [session-id (:current-session-id db)
+         mode (get-in db [:capture :mode])]
+     (if (and (= mode :recording) session-id)
+       ;; Append frame to current recording session
+       (let [session (get-in db [:sessions session-id])
+             updated-session (persist/append-frame-to-session session frame)]
+         (assoc-in db [:sessions session-id] updated-session))
+       ;; Not recording, just update buffer
+       db))))
+
+(rf/reg-event-fx
+ ::save-current-session
+ (fn [{:keys [db]} _]
+   (println "Saving current session...")
+   (let [session-id (:current-session-id db)
+         session (get-in db [:sessions session-id])]
+     (if session
+       (let [result (files/save-session! session)]
+         (if (:success? result)
+           (do
+             (println "Session saved successfully:" (:file-path result))
+             ;; Update saved sessions list
+             {:db (-> db
+                      (update-in [:saved-sessions :loaded-ids] conj session-id)
+                      (assoc-in [:saved-sessions :sessions-by-id session-id]
+                                {:session/id session-id
+                                 :session/name (:session/name session)
+                                 :session/created-at (:session/created-at session)
+                                 :session/duration-ms (:session/duration-ms session)
+                                 :session/frame-count (:session/frame-count session)}))})
+           (do
+             (js/console.error "Failed to save session:" (:error result))
+             {})))
+       (do
+         (js/console.warn "No current session to save")
+         {})))))
+
+(rf/reg-event-fx
+ ::load-session-from-disk
+ (fn [{:keys [db]} [_ session-id]]
+   (println "Loading session from disk:" session-id)
+   (if-let [session (files/load-session! session-id)]
+     (do
+       (println "Session loaded successfully:" session-id)
+       {:db (-> db
+                (assoc-in [:sessions session-id] session)
+                (assoc :current-session-id session-id)
+                (assoc-in [:ui :current-view] :analysis))})
+     (do
+       (js/console.error "Failed to load session:" session-id)
+       {}))))
+
+(rf/reg-event-fx
+ ::load-all-saved-sessions-list
+ (fn [{:keys [db]} _]
+   (println "Loading saved sessions list...")
+   (let [session-ids (files/list-session-ids!)]
+     (println "Found" (count session-ids) "saved sessions")
+     {:db (assoc-in db [:saved-sessions :loaded-ids] session-ids)})))
+
+(rf/reg-event-fx
+ ::delete-session
+ (fn [{:keys [db]} [_ session-id]]
+   (println "Deleting session:" session-id)
+   (let [result (files/delete-session! session-id)]
+     (if (:success? result)
+       (do
+         (println "Session deleted successfully")
+         {:db (-> db
+                  (update-in [:saved-sessions :loaded-ids]
+                             (fn [ids] (filterv #(not= % session-id) ids)))
+                  (update-in [:saved-sessions :sessions-by-id]
+                             dissoc session-id)
+                  (update :sessions dissoc session-id))})
+       (do
+         (js/console.error "Failed to delete session:" (:error result))
+         {})))))
+
+;; ============================================================
+;; SESSION RECORDING SUBSCRIPTIONS
+;; ============================================================
+
+(rf/reg-sub
+ ::recording?
+ (fn [db _]
+   (= :recording (get-in db [:capture :mode]))))
+
+(rf/reg-sub
+ ::recording-duration-ms
+ (fn [db _]
+   (when-let [start-time (get-in db [:capture :recording-start-time])]
+     (- (.now js/Date) start-time))))
+
+(rf/reg-sub
+ ::current-recording-frame-count
+ (fn [db _]
+   (when-let [session-id (:current-session-id db)]
+     (get-in db [:sessions session-id :session/frame-count] 0))))
+
+(rf/reg-sub
+ ::saved-session-ids
+ (fn [db _]
+   (get-in db [:saved-sessions :loaded-ids] [])))
+
+(rf/reg-sub
+ ::saved-sessions-metadata
+ (fn [db _]
+   (get-in db [:saved-sessions :sessions-by-id] {})))

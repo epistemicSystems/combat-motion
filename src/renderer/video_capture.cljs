@@ -141,6 +141,13 @@
 
                                                   ;; Pose detected - dispatch enhanced pose to state
                                                   (rf/dispatch [::state/pose-detected enhanced-pose])
+
+                                                  ;; If recording, append frame to session
+                                                  (let [frame-data {:frame/index @frame-count
+                                                                    :frame/timestamp-ms (or (:timestamp-ms frame) (.now js/Date))
+                                                                    :frame/pose enhanced-pose}]
+                                                    (rf/dispatch [::state/append-frame-to-recording frame-data]))
+
                                                   ;; Call callback with frame + enhanced pose
                                                   (when on-frame-captured
                                                     (on-frame-captured (assoc frame :pose enhanced-pose))))
@@ -251,7 +258,60 @@
                           :height "12px"
                           :border-radius "50%"
                           :background-color "#f44336"
-                          :animation "blink 1s infinite"}}])]
+                          :animation "blink 1s infinite"}}])
+
+          ;; Recording controls
+          (let [recording? @(rf/subscribe [::state/recording?])
+                frame-count @(rf/subscribe [::state/current-recording-frame-count])
+                duration-ms @(rf/subscribe [::state/recording-duration-ms])]
+            [:div {:style {:display "flex"
+                          :gap "10px"
+                          :align-items "center"}}
+
+             ;; Start/Stop Recording button
+             (if recording?
+               [:button
+                {:on-click #(rf/dispatch [::state/stop-session-recording])
+                 :style {:padding "8px 16px"
+                        :background-color "#f44336"
+                        :color "white"
+                        :border "none"
+                        :border-radius "4px"
+                        :cursor "pointer"
+                        :font-weight "bold"}}
+                "⬤ Stop Recording"]
+
+               [:button
+                {:on-click #(rf/dispatch [::state/start-session-recording "Live Session"])
+                 :disabled (not @camera-active?)
+                 :style {:padding "8px 16px"
+                        :background-color (if @camera-active? "#f44336" "#ccc")
+                        :color "white"
+                        :border "none"
+                        :border-radius "4px"
+                        :cursor (if @camera-active? "pointer" "not-allowed")}}
+                "⬤ Start Recording"])
+
+             ;; Recording info
+             (when recording?
+               [:div {:style {:font-size "12px"
+                             :color "#f44336"
+                             :font-weight "bold"}}
+                (str "Recording: " (.toFixed (/ (or duration-ms 0) 1000) 1) "s | "
+                     (or frame-count 0) " frames")])
+
+             ;; Save button (only when stopped and has frames)
+             (when (and (not recording?)
+                       (> (or frame-count 0) 0))
+               [:button
+                {:on-click #(rf/dispatch [::state/save-current-session])
+                 :style {:padding "8px 16px"
+                        :background-color "#4CAF50"
+                        :color "white"
+                        :border "none"
+                        :border-radius "4px"
+                        :cursor "pointer"}}
+                "💾 Save Session"])])]
 
          ;; Video element
          [:div {:style {:position "relative"
