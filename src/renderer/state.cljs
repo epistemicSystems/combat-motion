@@ -12,6 +12,8 @@
             [combatsys.mocks :as mocks]
             [combatsys.breathing :as breathing]
             [combatsys.posture :as posture]
+            [combatsys.calibration :as calibration]
+            [combatsys.personalization :as personalization]
             [combatsys.renderer.persistence :as persist]
             [combatsys.renderer.files :as files]
             [combatsys.renderer.video :as video]
@@ -76,7 +78,20 @@
      :current-frame-index 0
      :view-mode :side-by-side} ;; :original | :magnified | :side-by-side
     :metadata nil ;; {:width :height :fps :frame-count}
-    :error nil}})
+    :error nil}
+
+   :calibration
+   {:active? false ;; Is calibration wizard active?
+    :current-step-idx nil ;; nil = not started, 0-2 = steps, 3+ = complete
+    :user-height-cm nil ;; User-provided height (asked during T-pose)
+    :recording? false ;; Is current step recording?
+    :seconds-remaining 0 ;; Countdown timer
+    :timer-handle nil ;; js/setInterval handle for cleanup
+    :sessions [] ;; Collected calibration sessions [{:calibration-type X :timeline [...]}]
+    :completed-profile nil ;; Created user profile after all 3 sessions complete
+    :error nil}
+
+   :user-profile nil}) ;; Active user profile (loaded from disk or created via calibration)
 
 ;; ============================================================
 ;; EVENTS (State updates - all pure functions)
@@ -136,12 +151,17 @@
  (fn [db [_ session-id]]
    (println "Analyzing session" session-id "...")
    (let [session (get-in db [:sessions session-id])
-         
+         user-profile (:user-profile db) ;; Get active user profile for personalization
+
          ;; Run all analyzers (pure functions)
+         ;; Pass user-profile for personalized thresholds and baseline comparison
          analyzed (-> session
-                      breathing/analyze
-                      posture/analyze)]
-     
+                      (breathing/analyze user-profile)
+                      (posture/analyze user-profile))]
+
+     (when user-profile
+       (println "Using personalized analysis for user:" (:user-id user-profile)))
+
      ;; Update session with analysis results
      (assoc-in db [:sessions session-id] analyzed))))
 
@@ -777,3 +797,220 @@
         :magnified (nth magnified-frames current-frame-index nil)
         :view-mode view-mode
         :index current-frame-index}))))
+
+;; ============================================================
+;; CALIBRATION WIZARD EVENTS
+;; ============================================================
+
+(rf/reg-event-db
+ ::calibration/start-wizard
+ (fn [db _]
+   (println "Starting calibration wizard...")
+   (-> db
+       (assoc-in [:calibration :active?] true)
+       (assoc-in [:calibration :current-step-idx] 0)
+       (assoc-in [:calibration :sessions] [])
+       (assoc-in [:calibration :completed-profile] nil)
+       (assoc-in [:calibration :error] nil)
+       (assoc-in [:ui :current-view] :calibration))))
+
+(rf/reg-event-db
+ ::calibration/set-user-height
+ (fn [db [_ height-cm]]
+   (println "Setting user height:" height-cm "cm")
+   (assoc-in db [:calibration :user-height-cm] height-cm)))
+
+(rf/reg-event-db
+ ::calibration/start-step
+ (fn [db [_ step-idx]]
+   (println "Starting calibration step" step-idx)
+   (let [step-types [:t-pose :breathing :movement]
+         step-type (nth step-types step-idx)
+         duration-s (case step-type
+                      :t-pose 10
+                      :breathing 60
+                      :movement 60)
+         session-id (random-uuid)
+         ;; Create new session for this calibration step
+         new-session {:session/id session-id
+                      :session/name (str "Calibration - " (name step-type))
+                      :session/created-at (js/Date.)
+                      :session/timeline []
+                      :session/status :recording}]
+     (-> db
+         (assoc-in [:calibration :current-step-idx] step-idx)
+         (assoc-in [:calibration :recording?] true)
+         (assoc-in [:calibration :seconds-remaining] duration-s)
+         ;; Create new calibration session
+         (assoc :current-session-id session-id)
+         (assoc-in [:sessions session-id] new-session)
+         (assoc-in [:capture :mode] :recording)
+         (assoc-in [:capture :recording-start-time] (.now js/Date))))))
+
+(rf/reg-event-db
+ ::calibration/tick
+ (fn [db _]
+   (let [seconds (get-in db [:calibration :seconds-remaining])]
+     (if (<= seconds 1)
+       ;; Time's up - stop recording and complete step
+       (let [session-id (:current-session-id db)
+             session (get-in db [:sessions session-id])
+             timeline (:session/timeline session)
+             step-idx (get-in db [:calibration :current-step-idx])
+             step-types [:t-pose :breathing :movement]
+             step-type (nth step-types step-idx)
+
+             ;; Create calibration session
+             cal-session {:calibration-type step-type
+                         :session-id session-id
+                         :created-at (js/Date.)
+                         :duration-ms (* (case step-type
+                                          :t-pose 10
+                                          :breathing 60
+                                          :movement 60) 1000)
+                         :timeline timeline}
+
+             ;; Add to sessions list
+             sessions (conj (get-in db [:calibration :sessions]) cal-session)
+
+             ;; Check if all 3 sessions complete
+             all-complete? (= 3 (count sessions))]
+
+         (-> db
+             (assoc-in [:calibration :recording?] false)
+             (assoc-in [:calibration :seconds-remaining] 0)
+             (assoc-in [:calibration :sessions] sessions)
+             (assoc-in [:capture :mode] :idle)
+             ;; If all complete, create profile
+             (cond->
+               all-complete?
+               (assoc-in [:calibration :completed-profile]
+                        (personalization/create-user-profile
+                         (random-uuid)
+                         sessions
+                         (get-in db [:calibration :user-height-cm]))))))
+       ;; Decrement counter
+       (update-in db [:calibration :seconds-remaining] dec)))))
+
+(rf/reg-event-db
+ ::calibration/complete-step
+ (fn [db _]
+   (println "Completing current calibration step...")
+   (let [step-idx (get-in db [:calibration :current-step-idx])]
+     (if (< step-idx 2)
+       ;; Advance to next step
+       (-> db
+           (assoc-in [:calibration :current-step-idx] (inc step-idx))
+           (assoc-in [:calibration :recording?] false))
+       ;; All steps complete - show completion screen
+       (-> db
+           (assoc-in [:calibration :current-step-idx] 3)
+           (assoc-in [:calibration :recording?] false))))))
+
+(rf/reg-event-db
+ ::calibration/skip-wizard
+ (fn [db _]
+   (println "Skipping calibration wizard...")
+   (-> db
+       (assoc-in [:calibration :active?] false)
+       (assoc-in [:calibration :current-step-idx] nil)
+       (assoc-in [:calibration :sessions] [])
+       (assoc :user-profile nil) ;; No profile, use generic thresholds
+       (assoc-in [:ui :current-view] :live-feed))))
+
+(rf/reg-event-db
+ ::calibration/cancel-wizard
+ (fn [db _]
+   (println "Canceling calibration wizard...")
+   (-> db
+       (assoc-in [:calibration :active?] false)
+       (assoc-in [:calibration :current-step-idx] nil)
+       (assoc-in [:calibration :recording?] false)
+       (assoc-in [:calibration :sessions] [])
+       (assoc-in [:capture :mode] :idle)
+       (assoc-in [:ui :current-view] :live-feed))))
+
+(rf/reg-event-fx
+ ::calibration/finish
+ (fn [{:keys [db]} _]
+   (println "Finishing calibration wizard...")
+   (let [profile (get-in db [:calibration :completed-profile])]
+     {:db (-> db
+              (assoc :user-profile profile)
+              (assoc-in [:calibration :active?] false)
+              (assoc-in [:calibration :current-step-idx] nil)
+              (assoc-in [:ui :current-view] :live-feed))
+      :dispatch [::user-profile/save profile]})))
+
+;; ============================================================
+;; USER PROFILE EVENTS
+;; ============================================================
+
+(rf/reg-event-db
+ ::user-profile/loaded
+ (fn [db [_ profile]]
+   (println "User profile loaded:" (:user-id profile))
+   (assoc db :user-profile profile)))
+
+(rf/reg-event-fx
+ ::user-profile/save
+ (fn [{:keys [db]} [_ profile]]
+   (println "Saving user profile to disk...")
+   (let [result (files/save-user-profile! profile)]
+     (if (:success? result)
+       (do
+         (println "Profile saved successfully:" (:file-path result))
+         {:db db})
+       (do
+         (js/console.error "Failed to save profile:" (:error result))
+         {:db (assoc-in db [:calibration :error]
+                       (str "Failed to save profile: " (:error result)))})))))
+
+;; ============================================================
+;; CALIBRATION WIZARD SUBSCRIPTIONS
+;; ============================================================
+
+(rf/reg-sub
+ ::calibration/active?
+ (fn [db _]
+   (get-in db [:calibration :active?])))
+
+(rf/reg-sub
+ ::calibration/current-step-idx
+ (fn [db _]
+   (get-in db [:calibration :current-step-idx])))
+
+(rf/reg-sub
+ ::calibration/user-height-cm
+ (fn [db _]
+   (get-in db [:calibration :user-height-cm])))
+
+(rf/reg-sub
+ ::calibration/recording?
+ (fn [db _]
+   (get-in db [:calibration :recording?])))
+
+(rf/reg-sub
+ ::calibration/seconds-remaining
+ (fn [db _]
+   (get-in db [:calibration :seconds-remaining])))
+
+(rf/reg-sub
+ ::calibration/sessions
+ (fn [db _]
+   (get-in db [:calibration :sessions])))
+
+(rf/reg-sub
+ ::calibration/completed-profile
+ (fn [db _]
+   (get-in db [:calibration :completed-profile])))
+
+(rf/reg-sub
+ ::calibration/error
+ (fn [db _]
+   (get-in db [:calibration :error])))
+
+(rf/reg-sub
+ ::user-profile
+ (fn [db _]
+   (:user-profile db)))

@@ -14,6 +14,7 @@
    :session/timeline [{:frame/index 0 :frame/pose {...}}]
    :session/metadata {...}}"
   (:require [cljs.reader :as reader]
+            [combatsys.schema :as schema]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -422,3 +423,92 @@
   ;; => 2200 bytes
 
   )
+
+;; ============================================================================
+;; User Profile Serialization (LOD 5)
+;; ============================================================================
+
+(defn profile->edn-string
+  "Convert user profile map to EDN string.
+
+  Pure function.
+
+  Args:
+    profile: User profile map with :user-id, :baseline-pose, etc.
+
+  Returns:
+    EDN string suitable for file storage
+
+  Example:
+    (profile->edn-string profile)
+    => '{:user-id #uuid \"...\" :height-cm 178 ...}'"
+  [profile]
+  (pr-str profile))
+
+(defn edn-string->profile
+  "Parse EDN string to user profile map.
+
+  Pure function.
+
+  Args:
+    edn-str: EDN string from file
+
+  Returns:
+    User profile map, or nil if parsing fails
+
+  Example:
+    (edn-string->profile '{:user-id #uuid \"...\"}')
+    => {:user-id #uuid \"...\"}
+
+  Error handling:
+    - Invalid EDN → returns nil
+    - Malformed data → returns nil
+    - Logs error to console"
+  [edn-str]
+  (try
+    (reader/read-string edn-str)
+    (catch js/Error e
+      (js/console.error "Failed to parse profile EDN:" (.-message e))
+      nil)))
+
+(defn valid-user-profile?
+  "Check if user profile map is valid.
+
+  Pure function.
+
+  Args:
+    profile: User profile map to validate
+
+  Returns:
+    Boolean - true if valid
+
+  Uses schema/valid-user-profile? for validation.
+
+  Example:
+    (valid-user-profile? profile)
+    => true"
+  [profile]
+  (and (map? profile)
+       (schema/valid-user-profile? profile)))
+
+(defn validate-user-profile
+  "Validate user profile and return errors.
+
+  Pure function.
+
+  Args:
+    profile: User profile map
+
+  Returns:
+    {:valid? boolean :errors [error messages]}
+
+  Example:
+    (validate-user-profile profile)
+    => {:valid? true :errors []}
+
+    (validate-user-profile invalid-profile)
+    => {:valid? false :errors ['Schema validation failed']}"
+  [profile]
+  (if (schema/valid-user-profile? profile)
+    {:valid? true :errors []}
+    {:valid? false :errors ["Schema validation failed"]}))

@@ -424,3 +424,278 @@
   ;; => 123456
 
   )
+
+;; ============================================================================
+;; User Profile Storage (LOD 5)
+;; ============================================================================
+
+(defn get-profiles-dir
+  "Get profiles directory path.
+
+  Pure function.
+
+  Returns:
+    String path to profiles directory
+
+  Example:
+    (get-profiles-dir)
+    => '/home/user/.config/CombatSys/profiles'"
+  []
+  (path/join (get-user-data-path) "profiles"))
+
+(defn get-profile-file-path
+  "Get file path for user profile.
+
+  Pure function.
+
+  Args:
+    user-id: User UUID (as string or UUID)
+
+  Returns:
+    String path to profile EDN file
+
+  Example:
+    (get-profile-file-path '550e8400-e29b-41d4-a716-446655440000')
+    => '/home/user/.config/CombatSys/profiles/550e8400-e29b-41d4-a716-446655440000.edn'"
+  [user-id]
+  (let [id-str (str user-id)
+        filename (str id-str ".edn")]
+    (path/join (get-profiles-dir) filename)))
+
+(defn ensure-profiles-dir!
+  "Create profiles directory if it doesn't exist.
+
+  Side effect: File system write (mkdir).
+
+  Returns:
+    true if directory exists/created, false on error
+
+  Example:
+    (ensure-profiles-dir!)
+    => true"
+  []
+  (try
+    (let [profiles-dir (get-profiles-dir)]
+      (when-not (fs/existsSync profiles-dir)
+        (fs/mkdirSync profiles-dir #js {:recursive true})
+        (js/console.log "Created profiles directory:" profiles-dir))
+      true)
+    (catch js/Error e
+      (js/console.error "Failed to create profiles directory:" (.-message e))
+      false)))
+
+(defn save-user-profile!
+  "Save user profile to disk as EDN file.
+
+  Side effect: File system write.
+
+  Args:
+    profile: User profile map with :user-id
+
+  Returns:
+    {:success? boolean
+     :file-path string (if successful)
+     :error string (if failed)}
+
+  Example:
+    (save-user-profile! profile)
+    => {:success? true
+        :file-path '/home/user/.config/CombatSys/profiles/550e8400....edn'}"
+  [profile]
+  (try
+    ;; Ensure directory exists
+    (when-not (ensure-profiles-dir!)
+      (throw (js/Error. "Failed to create profiles directory")))
+
+    ;; Validate profile
+    (when-not (persist/valid-user-profile? profile)
+      (throw (js/Error. "Invalid user profile")))
+
+    ;; Get file path
+    (let [user-id (:user-id profile)
+          file-path (get-profile-file-path user-id)
+
+          ;; Serialize to EDN
+          edn-str (persist/profile->edn-string profile)]
+
+      ;; Write to file (synchronous)
+      (fs/writeFileSync file-path edn-str "utf8")
+
+      (js/console.log "Saved user profile:" user-id "to" file-path)
+
+      {:success? true
+       :file-path file-path})
+
+    (catch js/Error e
+      (js/console.error "Failed to save user profile:" (.-message e))
+      {:success? false
+       :error (.-message e)})))
+
+(defn load-user-profile!
+  "Load user profile from disk by ID.
+
+  Side effect: File system read.
+
+  Args:
+    user-id: User UUID (as string or UUID)
+
+  Returns:
+    User profile map if found, nil otherwise
+
+  Example:
+    (load-user-profile! '550e8400-e29b-41d4-a716-446655440000')
+    => {:user-id #uuid '550e8400...' :height-cm 178 ...}
+
+    (load-user-profile! 'nonexistent')
+    => nil
+
+  Error handling:
+    - File not found → nil (not an error)
+    - File read error → nil + console.error
+    - Invalid EDN → nil + console.error
+    - Schema validation fails → nil + console.error"
+  [user-id]
+  (try
+    (let [file-path (get-profile-file-path user-id)]
+
+      ;; Check if file exists
+      (if (fs/existsSync file-path)
+        (do
+          ;; Read file (synchronous)
+          (let [edn-str (fs/readFileSync file-path "utf8")
+
+                ;; Deserialize from EDN
+                profile (persist/edn-string->profile edn-str)]
+
+            ;; Validate loaded profile
+            (if (persist/valid-user-profile? profile)
+              (do
+                (js/console.log "Loaded user profile:" user-id)
+                profile)
+              (do
+                (js/console.error "Loaded profile is invalid:" user-id)
+                nil))))
+
+        ;; File doesn't exist
+        (do
+          (js/console.warn "Profile file not found:" user-id)
+          nil)))
+
+    (catch js/Error e
+      (js/console.error "Failed to load user profile:" user-id (.-message e))
+      nil)))
+
+(defn get-default-user-profile!
+  "Get the default (most recently used) user profile.
+
+  For single-user app, this is just the first profile found.
+
+  Side effect: File system read (directory listing + file read).
+
+  Returns:
+    User profile map, or nil if no profiles exist
+
+  Example:
+    (get-default-user-profile!)
+    => {:user-id #uuid '...' :height-cm 178 ...}
+
+  Error handling:
+    - No profiles found → nil (not an error)
+    - All profiles corrupted → nil + console.error"
+  []
+  (try
+    ;; Ensure directory exists
+    (ensure-profiles-dir!)
+
+    (let [profiles-dir (get-profiles-dir)
+
+          ;; Read directory (synchronous)
+          files (fs/readdirSync profiles-dir)
+
+          ;; Filter .edn files and extract IDs
+          profile-ids (->> files
+                           (filter #(.endsWith % ".edn"))
+                           (mapv #(subs % 0 (- (count %) 4))))]  ; Remove .edn extension
+
+      (if (seq profile-ids)
+        (do
+          (js/console.log "Found" (count profile-ids) "user profiles")
+          ;; Load first profile
+          (load-user-profile! (first profile-ids)))
+        (do
+          (js/console.log "No user profiles found")
+          nil)))
+
+    (catch js/Error e
+      (js/console.error "Failed to get default user profile:" (.-message e))
+      nil)))
+
+(defn list-user-profile-ids!
+  "List all saved user profile IDs.
+
+  Side effect: File system read (directory listing).
+
+  Returns:
+    Vector of user ID strings (UUIDs)
+
+  Example:
+    (list-user-profile-ids!)
+    => ['550e8400-e29b-41d4-a716-446655440000']"
+  []
+  (try
+    ;; Ensure directory exists
+    (ensure-profiles-dir!)
+
+    (let [profiles-dir (get-profiles-dir)
+
+          ;; Read directory (synchronous)
+          files (fs/readdirSync profiles-dir)
+
+          ;; Filter .edn files and extract IDs
+          profile-ids (->> files
+                           (filter #(.endsWith % ".edn"))
+                           (mapv #(subs % 0 (- (count %) 4))))]  ; Remove .edn extension
+
+      (js/console.log "Found" (count profile-ids) "user profiles")
+      profile-ids)
+
+    (catch js/Error e
+      (js/console.error "Failed to list user profiles:" (.-message e))
+      [])))
+
+(defn delete-user-profile!
+  "Delete user profile file from disk.
+
+  Side effect: File system delete.
+
+  Args:
+    user-id: User UUID (as string or UUID)
+
+  Returns:
+    {:success? boolean
+     :error string (if failed)}
+
+  Example:
+    (delete-user-profile! '550e8400-e29b-41d4-a716-446655440000')
+    => {:success? true}"
+  [user-id]
+  (try
+    (let [file-path (get-profile-file-path user-id)]
+
+      ;; Check if file exists
+      (if (fs/existsSync file-path)
+        (do
+          ;; Delete file (synchronous)
+          (fs/unlinkSync file-path)
+          (js/console.log "Deleted user profile:" user-id)
+          {:success? true})
+
+        ;; File doesn't exist (treat as success)
+        (do
+          (js/console.warn "Profile file not found (already deleted?):" user-id)
+          {:success? true})))
+
+    (catch js/Error e
+      (js/console.error "Failed to delete user profile:" user-id (.-message e))
+      {:success? false
+       :error (.-message e)})))

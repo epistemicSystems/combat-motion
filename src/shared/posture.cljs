@@ -391,12 +391,20 @@
   "Generate coaching insights from posture metrics.
 
    Converts numbers into actionable recommendations in natural language.
+   Personalized if user-profile and baselines provided.
 
    Args:
      fhp: Forward head distance (cm)
      shoulder-imbalance: Shoulder angle (degrees)
      spine: Spine classification
      overall-score: Overall score (0-1)
+     user-profile: (optional) User profile for personalization
+     baseline-fhp: (optional) User's baseline forward head (cm)
+     baseline-si: (optional) User's baseline shoulder imbalance (deg)
+     delta-fhp: (optional) Delta from baseline FHP
+     delta-si: (optional) Delta from baseline SI
+     alert-fhp-threshold: Alert threshold for FHP (cm)
+     alert-si-threshold: Alert threshold for SI (degrees)
 
    Returns:
      Vector of insight maps with keys:
@@ -405,39 +413,82 @@
      - :insight/severity (:low | :medium | :high)
      - :insight/recommendation (string)
 
-   Example:
-     (generate-insights 4.2 3.5 :neutral 0.84)
-     ;; => [{:insight/title \"Forward head posture detected\" ...}]"
-  [fhp shoulder-imbalance spine overall-score]
-  (let [insights (transient [])]
+   Example (no profile):
+     (generate-insights 4.2 3.5 :neutral 0.84 nil nil nil nil nil 5.0 5.0)
+     ;; => [{:insight/title \"Forward head posture detected\" ...}]
 
-    ;; Forward head insight
-    (when (> fhp 5.0)
-      (conj! insights
-             {:insight/title "Forward head posture detected"
-              :insight/description
-              (str "Your head is " (.toFixed fhp 1)
-                   " cm forward of your shoulders. This can lead to neck "
-                   "strain and headaches.")
-              :insight/severity (if (> fhp 8.0) :high :medium)
-              :insight/recommendation
-              "Practice chin tucks: Gently pull your chin back toward your neck, keeping eyes level. Hold for 5 seconds. Repeat 10 times, 3× daily. Also check your desk and screen height."}))
+   Example (with profile):
+     (generate-insights 5.8 2.1 :neutral 0.82 profile 4.3 1.5 1.5 0.6 5.0 5.0)
+     ;; => [{:insight/title \"Forward head posture worsened\"
+     ;;      :insight/description \"Your FHP is 1.5cm worse than your baseline...\" ...}]"
+  ([fhp shoulder-imbalance spine overall-score]
+   (generate-insights fhp shoulder-imbalance spine overall-score
+                      nil nil nil nil nil 5.0 5.0))
+  ([fhp shoulder-imbalance spine overall-score
+    user-profile baseline-fhp baseline-si delta-fhp delta-si
+    alert-fhp-threshold alert-si-threshold]
+   (let [insights (transient [])]
 
-    ;; Shoulder imbalance insight
-    (when (> (Math/abs shoulder-imbalance) 5.0)
-      (let [higher-side (if (> shoulder-imbalance 0) "right" "left")
-            lower-side (if (> shoulder-imbalance 0) "left" "right")]
-        (conj! insights
-               {:insight/title "Shoulder imbalance detected"
-                :insight/description
-                (str "Your " higher-side " shoulder is "
-                     (.toFixed (Math/abs shoulder-imbalance) 1)
-                     "° higher than your " lower-side " shoulder.")
-                :insight/severity :medium
-                :insight/recommendation
-                (str "Stretch your " higher-side " side regularly: "
-                     "Side bend away from the higher shoulder, holding 20-30 seconds. "
-                     "Strengthen the " lower-side " side with targeted exercises.")})))
+     ;; Forward head insight (personalized if baseline exists)
+     (if (and user-profile baseline-fhp delta-fhp)
+       ;; PERSONALIZED FHP INSIGHT
+       (when (> delta-fhp 1.0) ;; Worsened by >1cm from baseline
+         (conj! insights
+                {:insight/title "Forward head posture worsened"
+                 :insight/description
+                 (str "Your head is " (.toFixed fhp 1) " cm forward, which is "
+                      (.toFixed delta-fhp 1) " cm worse than your baseline of "
+                      (.toFixed baseline-fhp 1) " cm.")
+                 :insight/severity (if (> delta-fhp 2.0) :high :medium)
+                 :insight/recommendation
+                 "Practice chin tucks: Gently pull your chin back toward your neck, keeping eyes level. Hold for 5 seconds. Repeat 10 times, 3× daily. Also check your desk and screen height."}))
+
+       ;; GENERIC FHP INSIGHT (no baseline)
+       (when (> fhp alert-fhp-threshold)
+         (conj! insights
+                {:insight/title "Forward head posture detected"
+                 :insight/description
+                 (str "Your head is " (.toFixed fhp 1)
+                      " cm forward of your shoulders. This can lead to neck "
+                      "strain and headaches.")
+                 :insight/severity (if (> fhp 8.0) :high :medium)
+                 :insight/recommendation
+                 "Practice chin tucks: Gently pull your chin back toward your neck, keeping eyes level. Hold for 5 seconds. Repeat 10 times, 3× daily. Also check your desk and screen height."})))
+
+     ;; Shoulder imbalance insight (personalized if baseline exists)
+     (if (and user-profile baseline-si delta-si)
+       ;; PERSONALIZED SI INSIGHT
+       (when (> (Math/abs delta-si) 1.0) ;; Changed by >1 degree from baseline
+         (let [abs-delta (Math/abs delta-si)
+               higher-side (if (> shoulder-imbalance 0) "right" "left")
+               lower-side (if (> shoulder-imbalance 0) "left" "right")]
+           (conj! insights
+                  {:insight/title "Shoulder imbalance changed"
+                   :insight/description
+                   (str "Your shoulder imbalance is " (.toFixed (Math/abs shoulder-imbalance) 1)
+                        "°, which is " (.toFixed abs-delta 1) "° different from your baseline of "
+                        (.toFixed (Math/abs baseline-si) 1) "°.")
+                   :insight/severity (if (> abs-delta 2.0) :medium :low)
+                   :insight/recommendation
+                   (str "Stretch your " higher-side " side regularly: "
+                        "Side bend away from the higher shoulder, holding 20-30 seconds. "
+                        "Strengthen the " lower-side " side with targeted exercises.")})))
+
+       ;; GENERIC SI INSIGHT (no baseline)
+       (when (> (Math/abs shoulder-imbalance) alert-si-threshold)
+         (let [higher-side (if (> shoulder-imbalance 0) "right" "left")
+               lower-side (if (> shoulder-imbalance 0) "left" "right")]
+           (conj! insights
+                  {:insight/title "Shoulder imbalance detected"
+                   :insight/description
+                   (str "Your " higher-side " shoulder is "
+                        (.toFixed (Math/abs shoulder-imbalance) 1)
+                        "° higher than your " lower-side " shoulder.")
+                   :insight/severity :medium
+                   :insight/recommendation
+                   (str "Stretch your " higher-side " side regularly: "
+                        "Side bend away from the higher shoulder, holding 20-30 seconds. "
+                        "Strengthen the " lower-side " side with targeted exercises.")}))))
 
     ;; Spine alignment insight
     (when (not= spine :neutral)
@@ -500,9 +551,11 @@
    Pure function: session → session'
 
    Extracts pose landmarks, computes posture metrics, generates insights.
+   Personalized if user-profile provided (baselines and thresholds).
 
    Args:
      session: Session map with :session/timeline
+     user-profile: (optional) User profile with learned baselines and thresholds
 
    Returns:
      Session map with :posture added to [:session/analysis :posture]
@@ -513,42 +566,73 @@
    Performance:
      <5ms for 60-frame timeline
 
-   Example:
+   Example (no profile):
      (def session (load-session \"my-session\"))
      (def analyzed (posture/analyze session))
      (get-in analyzed [:session/analysis :posture :head-forward-cm])
      ;; => 4.2
 
-     (get-in analyzed [:session/analysis :posture :insights])
-     ;; => [{:insight/title \"Forward head posture detected\" ...}]"
-  [session]
-  (let [timeline (:session/timeline session)
+   Example (with profile):
+     (def analyzed (posture/analyze session user-profile))
+     (get-in analyzed [:session/analysis :posture :delta-from-baseline-fhp])
+     ;; => 1.5 (1.5cm worse than user's baseline)"
+  ([session]
+   (analyze session nil))
+  ([session user-profile]
+   (let [timeline (:session/timeline session)
 
-        ;; Step 1: Extract and average landmarks
-        landmarks (extract-relevant-landmarks timeline)
+         ;; Step 1: Extract and average landmarks
+         landmarks (extract-relevant-landmarks timeline)
 
-        ;; Step 2: Compute metrics
-        user-height (get-in session [:session/user :user/height-cm] 170)
-        fhp (measure-forward-head landmarks user-height)
-        shoulder-imbalance (measure-shoulder-imbalance landmarks)
-        spine (assess-spine-alignment landmarks)
-        overall-score (compute-overall-score fhp shoulder-imbalance spine)
+         ;; Step 2: Compute metrics
+         user-height (get-in session [:session/user :user/height-cm] 170)
+         fhp (measure-forward-head landmarks user-height)
+         shoulder-imbalance (measure-shoulder-imbalance landmarks)
+         spine (assess-spine-alignment landmarks)
+         overall-score (compute-overall-score fhp shoulder-imbalance spine)
 
-        ;; Step 3: Generate insights
-        insights (generate-insights fhp shoulder-imbalance spine overall-score)
+         ;; Step 3: Get baselines from profile (if exists)
+         baseline-fhp (when user-profile
+                        (get-in user-profile [:posture-baseline :typical-forward-head-cm]))
+         baseline-si (when user-profile
+                       (get-in user-profile [:posture-baseline :typical-shoulder-imbalance-deg]))
 
-        ;; Step 4: Build analysis result
-        posture-analysis
-        {:head-forward-cm fhp
-         :shoulder-imbalance-deg shoulder-imbalance
-         :spine-alignment spine
-         :overall-score overall-score
-         :insights insights
+         ;; Step 4: Compute deltas from baseline
+         delta-fhp (when baseline-fhp (- fhp baseline-fhp))
+         delta-si (when baseline-si (- shoulder-imbalance baseline-si))
 
-         ;; Metadata
-         :method :geometric-2d
-         :confidence 0.85
-         :source-frames (mapv :frame/index timeline)}]
+         ;; Step 5: Get alert thresholds (personalized or default)
+         alert-fhp-threshold (if user-profile
+                               (get-in user-profile
+                                       [:learned-thresholds :posture-thresholds :forward-head-alert-cm])
+                               5.0) ;; Default: 5cm
+         alert-si-threshold (if user-profile
+                              (get-in user-profile
+                                      [:learned-thresholds :posture-thresholds :shoulder-imbalance-alert-deg])
+                              5.0) ;; Default: 5 degrees
 
-    ;; Return session with posture analysis added
-    (assoc-in session [:session/analysis :posture] posture-analysis)))
+         ;; Step 6: Generate insights (personalized if profile provided)
+         insights (generate-insights fhp shoulder-imbalance spine overall-score
+                                     user-profile baseline-fhp baseline-si
+                                     delta-fhp delta-si
+                                     alert-fhp-threshold alert-si-threshold)
+
+         ;; Step 7: Build analysis result
+         posture-analysis
+         {:head-forward-cm fhp
+          :shoulder-imbalance-deg shoulder-imbalance
+          :spine-alignment spine
+          :overall-score overall-score
+          :baseline-forward-head baseline-fhp
+          :baseline-shoulder-imbalance baseline-si
+          :delta-from-baseline-fhp delta-fhp
+          :delta-from-baseline-si delta-si
+          :insights insights
+
+          ;; Metadata
+          :method :geometric-2d
+          :confidence 0.85
+          :source-frames (mapv :frame/index timeline)}]
+
+     ;; Return session with posture analysis added
+     (assoc-in session [:session/analysis :posture] posture-analysis))))
