@@ -425,6 +425,109 @@
   )
 
 ;; ============================================================================
+;; Session Index Metadata (LOD 6)
+;; ============================================================================
+
+(defn extract-summary-stats
+  "Extract summary statistics from analyzed session.
+
+  Pure function.
+
+  Args:
+    session: Session with :session/analysis
+
+  Returns:
+    Map of key metrics for quick display (without loading full timeline)
+
+  Example:
+    (extract-summary-stats session)
+    => {:avg-breathing-rate 21.5
+        :avg-breathing-depth 0.82
+        :avg-posture-score 0.84
+        :forward-head-cm 4.2
+        :total-fatigue-windows 2}"
+  [session]
+  (let [breathing (get-in session [:session/analysis :breathing])
+        posture (get-in session [:session/analysis :posture])]
+    (cond-> {}
+      breathing
+      (assoc :avg-breathing-rate (:rate-bpm breathing)
+             :avg-breathing-depth (:depth-score breathing)
+             :total-fatigue-windows (count (:fatigue-windows breathing [])))
+
+      posture
+      (assoc :avg-posture-score (:overall-score posture)
+             :forward-head-cm (:head-forward-cm posture)
+             :shoulder-imbalance-deg (:shoulder-imbalance-deg posture)))))
+
+(defn extract-session-metadata
+  "Extract lightweight metadata from full session (for index).
+
+  Pure function. Excludes timeline to minimize size.
+
+  Args:
+    session: Full session map with timeline and analysis
+
+  Returns:
+    Metadata map without timeline (~100 bytes vs ~900KB for full session)
+
+  Example:
+    (extract-session-metadata session)
+    => {:session/id #uuid \"...\"
+        :session/name \"Morning Training\"
+        :session/created-at \"2025-11-18T10:30:00Z\"
+        :session/duration-ms 30000
+        :session/frame-count 450
+        :session/tags []
+        :session/notes \"\"
+        :session/summary-stats {:avg-breathing-rate 21.5 ...}}
+
+  Note:
+    - Designed for fast loading (100 sessions = ~10KB)
+    - Use for session browser, filtering, sorting
+    - Load full session only when needed (view, analyze)"
+  [session]
+  {:session/id (:session/id session)
+   :session/name (:session/name session)
+   :session/created-at (:session/created-at session)
+   :session/duration-ms (:session/duration-ms session)
+   :session/frame-count (:session/frame-count session)
+   :session/tags (get-in session [:session/metadata :tags] [])
+   :session/notes (get-in session [:session/metadata :notes] "")
+   :session/summary-stats (extract-summary-stats session)})
+
+(defn edn-string->session-index
+  "Parse EDN string to session index (vector of metadata).
+
+  Pure function.
+
+  Args:
+    edn-str: EDN string from index file
+
+  Returns:
+    Vector of session metadata maps, or empty vector if parsing fails
+
+  Example:
+    (edn-string->session-index '[{:session/id #uuid \"...\"} ...]')
+    => [{:session/id #uuid \"...\"} ...]
+
+  Error handling:
+    - Invalid EDN → returns []
+    - Malformed data → returns []
+    - Logs error to console"
+  [edn-str]
+  (try
+    (let [data (reader/read-string edn-str)]
+      (if (vector? data)
+        data
+        (do
+          (js/console.error "Session index is not a vector:" (type data))
+          [])))
+    (catch js/Error e
+      (js/console.error "Failed to parse session index:" (.-message e))
+      [])))
+
+;; ============================================================================
 ;; User Profile Serialization (LOD 5)
 ;; ============================================================================
 
