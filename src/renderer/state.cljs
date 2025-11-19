@@ -14,6 +14,7 @@
             [combatsys.posture :as posture]
             [combatsys.calibration :as calibration]
             [combatsys.personalization :as personalization]
+            [combatsys.analytics :as analytics]
             [combatsys.renderer.persistence :as persist]
             [combatsys.renderer.files :as files]
             [combatsys.renderer.video :as video]
@@ -91,7 +92,14 @@
     :completed-profile nil ;; Created user profile after all 3 sessions complete
     :error nil}
 
-   :user-profile nil}) ;; Active user profile (loaded from disk or created via calibration)
+   :user-profile nil ;; Active user profile (loaded from disk or created via calibration)
+
+   :session-browser
+   {:index [] ;; Vector of session metadata (loaded from index.edn)
+    :search-text "" ;; Search filter text
+    :sort-by :date ;; :date | :duration | :name
+    :date-filter :all ;; :all | :last-7-days | :last-30-days | :last-90-days
+    :selected-ids []}}) ;; Vector of selected session IDs (max 2 for comparison)
 
 ;; ============================================================
 ;; EVENTS (State updates - all pure functions)
@@ -482,19 +490,12 @@
    (let [session-id (:current-session-id db)
          session (get-in db [:sessions session-id])]
      (if session
-       (let [result (files/save-session! session)]
+       (let [result (files/save-session-with-index! session)]  ;; LOD 6: Use index-aware save
          (if (:success? result)
            (do
              (println "Session saved successfully:" (:file-path result))
-             ;; Update saved sessions list
-             {:db (-> db
-                      (update-in [:saved-sessions :loaded-ids] conj session-id)
-                      (assoc-in [:saved-sessions :sessions-by-id session-id]
-                                {:session/id session-id
-                                 :session/name (:session/name session)
-                                 :session/created-at (:session/created-at session)
-                                 :session/duration-ms (:session/duration-ms session)
-                                 :session/frame-count (:session/frame-count session)}))})
+             ;; Reload session index to reflect new session
+             {:dispatch [::session-browser/init]})
            (do
              (js/console.error "Failed to save session:" (:error result))
              {})))
@@ -1014,3 +1015,161 @@
  ::user-profile
  (fn [db _]
    (:user-profile db)))
+
+;; ============================================================
+;; SESSION BROWSER EVENTS (LOD 6)
+;; ============================================================
+
+(rf/reg-event-db
+ ::session-browser/init
+ (fn [db _]
+   (println "Initializing session browser...")
+   ;; Load session index from disk
+   (let [index (files/load-session-index!)]
+     (println "Loaded session index:" (count index) "sessions")
+     (assoc-in db [:session-browser :index] index))))
+
+(rf/reg-event-db
+ ::session-browser/set-search
+ (fn [db [_ search-text]]
+   (assoc-in db [:session-browser :search-text] search-text)))
+
+(rf/reg-event-db
+ ::session-browser/set-sort
+ (fn [db [_ sort-key]]
+   (assoc-in db [:session-browser :sort-by] sort-key)))
+
+(rf/reg-event-db
+ ::session-browser/set-date-filter
+ (fn [db [_ filter-key]]
+   (assoc-in db [:session-browser :date-filter] filter-key)))
+
+(rf/reg-event-db
+ ::session-browser/toggle-selection
+ (fn [db [_ session-id]]
+   (let [selected-ids (get-in db [:session-browser :selected-ids])
+         already-selected? (some #(= % session-id) selected-ids)
+         updated-ids (if already-selected?
+                       (filterv #(not= % session-id) selected-ids)
+                       (conj selected-ids session-id))]
+     ;; Limit to 2 selections for comparison
+     (assoc-in db [:session-browser :selected-ids]
+               (vec (take 2 updated-ids))))))
+
+(rf/reg-event-db
+ ::session-browser/clear-selection
+ (fn [db _]
+   (assoc-in db [:session-browser :selected-ids] [])))
+
+(rf/reg-event-fx
+ ::session-browser/delete-session
+ (fn [{:keys [db]} [_ session-id]]
+   (println "Deleting session from browser:" session-id)
+   ;; Delete session file and update index
+   (let [result (files/delete-session-with-index! session-id)]
+     (if (:success? result)
+       (do
+         (println "Session deleted successfully")
+         ;; Reload index to reflect deletion
+         {:dispatch [::session-browser/init]})
+       (do
+         (js/console.error "Failed to delete session:" (:error result))
+         {})))))
+
+(rf/reg-event-fx
+ ::session-browser/compare-selected
+ (fn [{:keys [db]} _]
+   (let [selected-ids (get-in db [:session-browser :selected-ids])]
+     (if (= 2 (count selected-ids))
+       (do
+         (println "Comparing sessions:" selected-ids)
+         ;; TODO: Implement comparison in Task 7.3 and 7.4
+         ;; For now, just show a message
+         (js/alert (str "Comparison feature coming in Task 7.3!\n\nSelected sessions:\n"
+                        (first selected-ids) "\n"
+                        (second selected-ids)))
+         {})
+       {}))))
+
+;; ============================================================
+;; SESSION BROWSER SUBSCRIPTIONS (LOD 6)
+;; ============================================================
+
+(rf/reg-sub
+ ::session-browser/index
+ (fn [db _]
+   (get-in db [:session-browser :index])))
+
+(rf/reg-sub
+ ::session-browser/search-text
+ (fn [db _]
+   (get-in db [:session-browser :search-text])))
+
+(rf/reg-sub
+ ::session-browser/sort-by
+ (fn [db _]
+   (get-in db [:session-browser :sort-by])))
+
+(rf/reg-sub
+ ::session-browser/date-filter
+ (fn [db _]
+   (get-in db [:session-browser :date-filter])))
+
+(rf/reg-sub
+ ::session-browser/selected-ids
+ (fn [db _]
+   (get-in db [:session-browser :selected-ids])))
+
+(rf/reg-sub
+ ::session-browser/selected-count
+ :<- [::session-browser/selected-ids]
+ (fn [selected-ids _]
+   (count selected-ids)))
+
+(rf/reg-sub
+ ::session-browser/total-count
+ :<- [::session-browser/index]
+ (fn [index _]
+   (count index)))
+
+(rf/reg-sub
+ ::session-browser/filtered-sessions
+ (fn [db _]
+   (let [index (get-in db [:session-browser :index])
+         search-text (get-in db [:session-browser :search-text])
+         sort-by (get-in db [:session-browser :sort-by])
+         date-filter (get-in db [:session-browser :date-filter])
+
+         ;; Apply date filter
+         date-filtered (case date-filter
+                         :last-7-days (analytics/filter-sessions-by-date-range
+                                       index
+                                       (analytics/get-date-n-days-ago 7)
+                                       nil)
+                         :last-30-days (analytics/filter-sessions-by-date-range
+                                        index
+                                        (analytics/get-date-n-days-ago 30)
+                                        nil)
+                         :last-90-days (analytics/filter-sessions-by-date-range
+                                        index
+                                        (analytics/get-date-n-days-ago 90)
+                                        nil)
+                         :all index
+                         index)
+
+         ;; Apply search filter
+         search-filtered (analytics/filter-sessions-by-search
+                          date-filtered
+                          search-text)
+
+         ;; Apply sort
+         sorted (analytics/sort-sessions search-filtered sort-by false)]
+
+     sorted)))
+
+(rf/reg-sub
+ ::session-browser/aggregate-stats
+ :<- [::session-browser/index]
+ (fn [index _]
+   (when (seq index)
+     (analytics/compute-aggregate-stats index))))

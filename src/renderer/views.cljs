@@ -10,7 +10,8 @@
             [combatsys.renderer.state :as state]
             [combatsys.renderer.video-capture :as video]
             [combatsys.renderer.onboarding :as onboarding]
-            [combatsys.renderer.profile-view :as profile]))
+            [combatsys.renderer.profile-view :as profile]
+            [combatsys.renderer.session-browser :as browser]))
 
 ;; ============================================================
 ;; UTILITY COMPONENTS
@@ -502,6 +503,10 @@
       [button {:label "Load Demo Session"
                :on-click #(rf/dispatch [::state/load-demo-session])}]
 
+      [button {:label "Sessions"
+               :on-click #(do (rf/dispatch [::state/session-browser/init])
+                             (rf/dispatch [::state/set-view :session-browser]))}]
+
       [button {:label "Calibration..."
                :on-click #(rf/dispatch [::state/calibration/start-wizard])}]
 
@@ -545,6 +550,10 @@
       ;; Profile view
       (= current-view :profile)
       [profile/profile-view]
+
+      ;; Session browser (LOD 6)
+      (= current-view :session-browser)
+      [browser/session-browser-view]
 
       ;; Main analysis view (default)
       :else
