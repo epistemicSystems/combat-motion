@@ -61,6 +61,19 @@
                                        :font-size "18px"}}
                         "(" session-count ")"]]
 
+     ;; Action buttons
+     [:div {:style {:margin-bottom "15px"}}
+      [:button {:on-click #(rf/dispatch [::state/set-view :analytics])
+                :style {:padding "10px 20px"
+                        :font-size "14px"
+                        :background-color "#4CAF50"
+                        :color "white"
+                        :border "none"
+                        :border-radius "6px"
+                        :cursor "pointer"
+                        :font-weight "600"}}
+       "📊 View Analytics Dashboard"]]
+
      ;; Aggregate stats row
      [:div {:style {:display "flex"
                     :gap "30px"

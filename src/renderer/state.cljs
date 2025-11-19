@@ -16,6 +16,7 @@
             [combatsys.personalization :as personalization]
             [combatsys.analytics :as analytics]
             [combatsys.comparison :as comparison]
+            [combatsys.trends :as trends]
             [combatsys.renderer.persistence :as persist]
             [combatsys.renderer.files :as files]
             [combatsys.renderer.video :as video]
@@ -1205,3 +1206,103 @@
  ::comparison/report
  (fn [db _]
    (get-in db [:comparison :report])))
+
+;; ============================================================
+;; ANALYTICS / TREND ANALYSIS SUBSCRIPTIONS (LOD 6)
+;; ============================================================
+
+(rf/reg-sub
+ ::analytics/trend-analysis
+ :<- [::session-browser/index]
+ (fn [session-index _]
+   "Compute trend analysis from session index.
+
+   Note: We need to load full sessions to get analysis data.
+   For now, we'll compute trends from metadata only (summary stats).
+
+   Future enhancement: Load only analysis data from sessions (not full timeline)."
+   (when (>= (count session-index) 3)
+     ;; For trend analysis, we need sessions sorted by date (oldest to newest)
+     (let [sorted-sessions (sort-by :session/created-at session-index)
+
+           ;; Extract metric values from metadata
+           breathing-rate-values (keep #(get-in % [:session/summary-stats :avg-breathing-rate])
+                                       sorted-sessions)
+           breathing-depth-values (keep #(get-in % [:session/summary-stats :avg-breathing-depth])
+                                        sorted-sessions)
+           posture-score-values (keep #(get-in % [:session/summary-stats :avg-posture-score])
+                                      sorted-sessions)
+           forward-head-values (keep #(get-in % [:session/summary-stats :forward-head-cm])
+                                     sorted-sessions)
+
+           timestamps (map :session/created-at sorted-sessions)]
+
+       ;; Compute regression for each metric
+       {:session-count (count sorted-sessions)
+        :date-range {:start-date (:session/created-at (first sorted-sessions))
+                     :end-date (:session/created-at (last sorted-sessions))}
+        :trends (cond-> {}
+                  (seq breathing-rate-values)
+                  (assoc :breathing-rate
+                         (let [regression (trends/fit-linear-regression breathing-rate-values)
+                               slope-threshold 0.05
+                               direction (cond
+                                          (> (:m regression) slope-threshold) :improving
+                                          (< (:m regression) (- slope-threshold)) :declining
+                                          :else :stable)]
+                           {:metric-name :rate-bpm
+                            :values (vec breathing-rate-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)}))
+
+                  (seq breathing-depth-values)
+                  (assoc :breathing-depth
+                         (let [regression (trends/fit-linear-regression breathing-depth-values)
+                               slope-threshold 0.05
+                               direction (cond
+                                          (> (:m regression) slope-threshold) :improving
+                                          (< (:m regression) (- slope-threshold)) :declining
+                                          :else :stable)]
+                           {:metric-name :depth-score
+                            :values (vec breathing-depth-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)}))
+
+                  (seq posture-score-values)
+                  (assoc :posture-score
+                         (let [regression (trends/fit-linear-regression posture-score-values)
+                               slope-threshold 0.05
+                               direction (cond
+                                          (> (:m regression) slope-threshold) :improving
+                                          (< (:m regression) (- slope-threshold)) :declining
+                                          :else :stable)]
+                           {:metric-name :overall-score
+                            :values (vec posture-score-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)}))
+
+                  (seq forward-head-values)
+                  (assoc :forward-head
+                         (let [regression (trends/fit-linear-regression forward-head-values)
+                               slope-threshold 0.05
+                               ;; Note: For forward head, lower is better, so flip the direction
+                               direction (cond
+                                          (< (:m regression) (- slope-threshold)) :improving
+                                          (> (:m regression) slope-threshold) :declining
+                                          :else :stable)]
+                           {:metric-name :head-forward-cm
+                            :values (vec forward-head-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)})))}))))

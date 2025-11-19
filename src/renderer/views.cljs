@@ -12,7 +12,8 @@
             [combatsys.renderer.onboarding :as onboarding]
             [combatsys.renderer.profile-view :as profile]
             [combatsys.renderer.session-browser :as browser]
-            [combatsys.renderer.comparison-view :as comparison]))
+            [combatsys.renderer.comparison-view :as comparison]
+            [combatsys.renderer.analytics-view :as analytics]))
 
 ;; ============================================================
 ;; UTILITY COMPONENTS
@@ -559,6 +560,10 @@
       ;; Comparison view (LOD 6)
       (= current-view :comparison)
       [comparison/comparison-view]
+
+      ;; Analytics view (LOD 6)
+      (= current-view :analytics)
+      [analytics/analytics-dashboard]
 
       ;; Main analysis view (default)
       :else
