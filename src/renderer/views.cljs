@@ -11,7 +11,8 @@
             [combatsys.renderer.video-capture :as video]
             [combatsys.renderer.onboarding :as onboarding]
             [combatsys.renderer.profile-view :as profile]
-            [combatsys.renderer.session-browser :as browser]))
+            [combatsys.renderer.session-browser :as browser]
+            [combatsys.renderer.comparison-view :as comparison]))
 
 ;; ============================================================
 ;; UTILITY COMPONENTS
@@ -554,6 +555,10 @@
       ;; Session browser (LOD 6)
       (= current-view :session-browser)
       [browser/session-browser-view]
+
+      ;; Comparison view (LOD 6)
+      (= current-view :comparison)
+      [comparison/comparison-view]
 
       ;; Main analysis view (default)
       :else

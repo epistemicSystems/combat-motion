@@ -353,7 +353,7 @@
         (str selected-count " session" (when (> selected-count 1) "s") " selected")]
 
        (when (= 2 selected-count)
-         [:button {:on-click #(rf/dispatch [::state/session-browser/compare-selected])
+         [:button {:on-click #(rf/dispatch [::state/comparison/compare-selected-sessions])
                    :style {:padding "10px 20px"
                            :font-size "14px"
                            :background-color "#00FF00"

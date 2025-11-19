@@ -15,6 +15,7 @@
             [combatsys.calibration :as calibration]
             [combatsys.personalization :as personalization]
             [combatsys.analytics :as analytics]
+            [combatsys.comparison :as comparison]
             [combatsys.renderer.persistence :as persist]
             [combatsys.renderer.files :as files]
             [combatsys.renderer.video :as video]
@@ -99,7 +100,10 @@
     :search-text "" ;; Search filter text
     :sort-by :date ;; :date | :duration | :name
     :date-filter :all ;; :all | :last-7-days | :last-30-days | :last-90-days
-    :selected-ids []}}) ;; Vector of selected session IDs (max 2 for comparison)
+    :selected-ids []} ;; Vector of selected session IDs (max 2 for comparison)
+
+   :comparison
+   {:report nil}}) ;; Comparison report from compare-sessions
 
 ;; ============================================================
 ;; EVENTS (State updates - all pure functions)
@@ -1076,21 +1080,6 @@
          (js/console.error "Failed to delete session:" (:error result))
          {})))))
 
-(rf/reg-event-fx
- ::session-browser/compare-selected
- (fn [{:keys [db]} _]
-   (let [selected-ids (get-in db [:session-browser :selected-ids])]
-     (if (= 2 (count selected-ids))
-       (do
-         (println "Comparing sessions:" selected-ids)
-         ;; TODO: Implement comparison in Task 7.3 and 7.4
-         ;; For now, just show a message
-         (js/alert (str "Comparison feature coming in Task 7.3!\n\nSelected sessions:\n"
-                        (first selected-ids) "\n"
-                        (second selected-ids)))
-         {})
-       {}))))
-
 ;; ============================================================
 ;; SESSION BROWSER SUBSCRIPTIONS (LOD 6)
 ;; ============================================================
@@ -1173,3 +1162,46 @@
  (fn [index _]
    (when (seq index)
      (analytics/compute-aggregate-stats index))))
+
+;; ============================================================
+;; COMPARISON EVENTS (LOD 6)
+;; ============================================================
+
+(rf/reg-event-fx
+ ::comparison/compare-selected-sessions
+ (fn [{:keys [db]} _]
+   (println "Comparing selected sessions...")
+   (let [selected-ids (get-in db [:session-browser :selected-ids])
+         session-a-id (first selected-ids)
+         session-b-id (second selected-ids)]
+
+     (if (and session-a-id session-b-id)
+       ;; Load both sessions (from memory or disk)
+       (let [session-a (or (get-in db [:sessions session-a-id])
+                           (files/load-session! session-a-id))
+             session-b (or (get-in db [:sessions session-b-id])
+                           (files/load-session! session-b-id))]
+
+         (if (and session-a session-b)
+           (let [comparison-report (comparison/compare-sessions session-a session-b)]
+             (println "Comparison complete:" (:overall-assessment comparison-report))
+             {:db (-> db
+                      (assoc-in [:comparison :report] comparison-report)
+                      (assoc-in [:sessions session-a-id] session-a)
+                      (assoc-in [:sessions session-b-id] session-b))
+              :dispatch [::set-view :comparison]})
+           (do
+             (js/console.error "Failed to load sessions for comparison")
+             {})))
+       (do
+         (js/console.warn "Need exactly 2 sessions selected for comparison")
+         {})))))
+
+;; ============================================================
+;; COMPARISON SUBSCRIPTIONS (LOD 6)
+;; ============================================================
+
+(rf/reg-sub
+ ::comparison/report
+ (fn [db _]
+   (get-in db [:comparison :report])))
