@@ -1,0 +1,467 @@
+/* =============================================================================
+   COMBATSYS MOTION ANALYSIS - ANIMATIONS & TRANSITIONS
+
+   Philosophy (Brett Victor):
+   - Make state transitions visible
+   - 60fps smooth motion
+   - GPU-accelerated transforms
+
+   Performance (John Carmack):
+   - Use transform/opacity (composited)
+   - Avoid layout properties (width, height, top, left)
+   - Hardware acceleration via translate3d
+   ============================================================================= */
+
+/* =============================================================================
+   KEYFRAME ANIMATIONS
+   ============================================================================= */
+
+/* Fade In */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Fade Out */
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Scale In */
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Scale Out */
+@keyframes scaleOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+/* Slide In from Left */
+@keyframes slideInleft {
+  from {
+    opacity: 0;
+    transform: translate3d(-30px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Slide In from Right */
+@keyframes slideInright {
+  from {
+    opacity: 0;
+    transform: translate3d(30px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Slide In from Top */
+@keyframes slideIntop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -30px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Slide In from Bottom */
+@keyframes slideInbottom {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 30px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Spinner */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Pulse (for loading states) */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Shimmer (for skeleton loaders) */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Bounce (for attention) */
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+/* Shake (for errors) */
+@keyframes shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  10%, 30%, 50%, 70%, 90% {
+    transform: translateX(-5px);
+  }
+  20%, 40%, 60%, 80% {
+    transform: translateX(5px);
+  }
+}
+
+/* =============================================================================
+   TRANSITION UTILITIES
+   ============================================================================= */
+
+.transition-all {
+  transition: all 0.3s ease-out;
+}
+
+.transition-fast {
+  transition: all 0.15s ease-out;
+}
+
+.transition-slow {
+  transition: all 0.5s ease-out;
+}
+
+.transition-opacity {
+  transition: opacity 0.3s ease-out;
+}
+
+.transition-transform {
+  transition: transform 0.3s ease-out;
+}
+
+/* =============================================================================
+   BUTTON STATES
+   ============================================================================= */
+
+.btn {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.2s ease-out;
+  cursor: pointer;
+}
+
+.btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-clicked {
+  animation: pulse 0.2s ease-out;
+}
+
+.btn-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.btn-loading {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+/* Button ripple effect */
+.btn::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.btn:active::after {
+  width: 300px;
+  height: 300px;
+}
+
+/* =============================================================================
+   CARD ANIMATIONS
+   ============================================================================= */
+
+.card {
+  transition: all 0.3s ease-out;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* =============================================================================
+   LIST ANIMATIONS (stagger)
+   ============================================================================= */
+
+.list-item {
+  animation: fadeIn 0.3s ease-out both;
+}
+
+.list-item:nth-child(1) { animation-delay: 0s; }
+.list-item:nth-child(2) { animation-delay: 0.05s; }
+.list-item:nth-child(3) { animation-delay: 0.1s; }
+.list-item:nth-child(4) { animation-delay: 0.15s; }
+.list-item:nth-child(5) { animation-delay: 0.2s; }
+.list-item:nth-child(6) { animation-delay: 0.25s; }
+.list-item:nth-child(7) { animation-delay: 0.3s; }
+.list-item:nth-child(8) { animation-delay: 0.35s; }
+.list-item:nth-child(9) { animation-delay: 0.4s; }
+.list-item:nth-child(10) { animation-delay: 0.45s; }
+
+/* =============================================================================
+   SKELETON LOADERS
+   ============================================================================= */
+
+.skeleton {
+  animation: pulse 1.5s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    #f0f0f0 25%,
+    #e0e0e0 50%,
+    #f0f0f0 75%
+  );
+  background-size: 200% 100%;
+}
+
+/* =============================================================================
+   MODAL & OVERLAY
+   ============================================================================= */
+
+.modal-backdrop {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal-content {
+  animation: scaleIn 0.3s ease-out;
+}
+
+/* =============================================================================
+   TOOLTIP
+   ============================================================================= */
+
+.tooltip {
+  animation: fadeIn 0.2s ease-out;
+  pointer-events: none;
+}
+
+.tooltip::after {
+  content: "";
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 6px solid transparent;
+}
+
+.tooltip-top::after {
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-top-color: rgba(0, 0, 0, 0.9);
+}
+
+.tooltip-bottom::after {
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-bottom-color: rgba(0, 0, 0, 0.9);
+}
+
+.tooltip-left::after {
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border-left-color: rgba(0, 0, 0, 0.9);
+}
+
+.tooltip-right::after {
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border-right-color: rgba(0, 0, 0, 0.9);
+}
+
+/* =============================================================================
+   ERROR BANNER
+   ============================================================================= */
+
+.error-banner {
+  animation: slideInbottom 0.3s ease-out;
+}
+
+.error-banner-exit {
+  animation: slideInbottom 0.3s ease-out reverse;
+}
+
+/* =============================================================================
+   PROGRESS INDICATORS
+   ============================================================================= */
+
+.progress-bar {
+  transition: width 0.3s ease-out;
+}
+
+.progress-indeterminate {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    #007bff 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* =============================================================================
+   NUMBER ANIMATIONS
+   ============================================================================= */
+
+.animated-number {
+  display: inline-block;
+  transition: transform 0.2s ease-out;
+}
+
+.animated-number.increasing {
+  animation: pulse 0.3s ease-out;
+  color: #28a745;
+}
+
+.animated-number.decreasing {
+  animation: pulse 0.3s ease-out;
+  color: #dc3545;
+}
+
+/* =============================================================================
+   FOCUS STATES (accessibility)
+   ============================================================================= */
+
+*:focus {
+  outline: 2px solid #007bff;
+  outline-offset: 2px;
+  transition: outline 0.15s ease-out;
+}
+
+button:focus,
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid #007bff;
+  outline-offset: 2px;
+}
+
+/* =============================================================================
+   REDUCED MOTION (accessibility)
+   ============================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* =============================================================================
+   UTILITY CLASSES
+   ============================================================================= */
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.fade-out {
+  animation: fadeOut 0.3s ease-out;
+}
+
+.scale-in {
+  animation: scaleIn 0.3s ease-out;
+}
+
+.slide-up {
+  animation: slideIntop 0.3s ease-out;
+}
+
+.slide-down {
+  animation: slideInbottom 0.3s ease-out;
+}
+
+.pulse {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.bounce {
+  animation: bounce 0.5s ease-out;
+}
+
+.shake {
+  animation: shake 0.5s ease-out;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
