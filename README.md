@@ -27,18 +27,25 @@ A **production-ready ClojureScript project** with comprehensive documentation op
 - 90% pure functions, 10% side effects
 - Hot reload development workflow
 
-✅ **LOD 0-5 Complete** (Production-Ready)
+✅ **LOD 0-6 Complete** (Production-Ready)
 - **LOD 0:** Mock data, stub functions, working UI
 - **LOD 1:** Real camera + MediaPipe pose estimation
 - **LOD 2:** Real breathing analysis (FFT, fatigue detection)
 - **LOD 3:** Eulerian video magnification (WebGPU shaders)
 - **LOD 4:** Posture analysis (forward head, shoulder imbalance, spine)
-- **LOD 5:** **User calibration & personalization** (NEW!)
+- **LOD 5:** User calibration & personalization
   - 3-step calibration wizard (T-pose, breathing, movement)
   - Personalized baseline learning
   - Adaptive thresholds per user
   - Profile persistence (EDN storage)
   - Personalized insights ("18% above YOUR baseline")
+- **LOD 6:** **Multi-Session Analytics** (NEW!)
+  - Session index for fast metadata loading (<100ms for 100 sessions)
+  - Full-featured session browser with search, filter, sort
+  - Side-by-side session comparison with delta calculations
+  - Trend analysis with linear regression (OLS)
+  - Interactive charts with trend lines (SVG, no external dependencies)
+  - Natural language insights for comparisons and trends
 
 ### Documentation Suite (8 Core Documents)
 

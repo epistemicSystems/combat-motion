@@ -28,6 +28,10 @@
   ;; Initialize re-frame state
   (rf/dispatch-sync [::state/initialize])
 
+  ;; Load session index (LOD 6)
+  (println "Loading session index...")
+  (rf/dispatch-sync [::state/session-browser/init])
+
   ;; Load user profile (if exists)
   (println "Checking for existing user profile...")
   (if-let [profile (files/get-default-user-profile!)]

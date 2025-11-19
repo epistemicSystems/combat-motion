@@ -14,6 +14,9 @@
             [combatsys.posture :as posture]
             [combatsys.calibration :as calibration]
             [combatsys.personalization :as personalization]
+            [combatsys.analytics :as analytics]
+            [combatsys.comparison :as comparison]
+            [combatsys.trends :as trends]
             [combatsys.renderer.persistence :as persist]
             [combatsys.renderer.files :as files]
             [combatsys.renderer.video :as video]
@@ -91,7 +94,17 @@
     :completed-profile nil ;; Created user profile after all 3 sessions complete
     :error nil}
 
-   :user-profile nil}) ;; Active user profile (loaded from disk or created via calibration)
+   :user-profile nil ;; Active user profile (loaded from disk or created via calibration)
+
+   :session-browser
+   {:index [] ;; Vector of session metadata (loaded from index.edn)
+    :search-text "" ;; Search filter text
+    :sort-by :date ;; :date | :duration | :name
+    :date-filter :all ;; :all | :last-7-days | :last-30-days | :last-90-days
+    :selected-ids []} ;; Vector of selected session IDs (max 2 for comparison)
+
+   :comparison
+   {:report nil}}) ;; Comparison report from compare-sessions
 
 ;; ============================================================
 ;; EVENTS (State updates - all pure functions)
@@ -482,19 +495,12 @@
    (let [session-id (:current-session-id db)
          session (get-in db [:sessions session-id])]
      (if session
-       (let [result (files/save-session! session)]
+       (let [result (files/save-session-with-index! session)]  ;; LOD 6: Use index-aware save
          (if (:success? result)
            (do
              (println "Session saved successfully:" (:file-path result))
-             ;; Update saved sessions list
-             {:db (-> db
-                      (update-in [:saved-sessions :loaded-ids] conj session-id)
-                      (assoc-in [:saved-sessions :sessions-by-id session-id]
-                                {:session/id session-id
-                                 :session/name (:session/name session)
-                                 :session/created-at (:session/created-at session)
-                                 :session/duration-ms (:session/duration-ms session)
-                                 :session/frame-count (:session/frame-count session)}))})
+             ;; Reload session index to reflect new session
+             {:dispatch [::session-browser/init]})
            (do
              (js/console.error "Failed to save session:" (:error result))
              {})))
@@ -1014,3 +1020,289 @@
  ::user-profile
  (fn [db _]
    (:user-profile db)))
+
+;; ============================================================
+;; SESSION BROWSER EVENTS (LOD 6)
+;; ============================================================
+
+(rf/reg-event-db
+ ::session-browser/init
+ (fn [db _]
+   (println "Initializing session browser...")
+   ;; Load session index from disk
+   (let [index (files/load-session-index!)]
+     (println "Loaded session index:" (count index) "sessions")
+     (assoc-in db [:session-browser :index] index))))
+
+(rf/reg-event-db
+ ::session-browser/set-search
+ (fn [db [_ search-text]]
+   (assoc-in db [:session-browser :search-text] search-text)))
+
+(rf/reg-event-db
+ ::session-browser/set-sort
+ (fn [db [_ sort-key]]
+   (assoc-in db [:session-browser :sort-by] sort-key)))
+
+(rf/reg-event-db
+ ::session-browser/set-date-filter
+ (fn [db [_ filter-key]]
+   (assoc-in db [:session-browser :date-filter] filter-key)))
+
+(rf/reg-event-db
+ ::session-browser/toggle-selection
+ (fn [db [_ session-id]]
+   (let [selected-ids (get-in db [:session-browser :selected-ids])
+         already-selected? (some #(= % session-id) selected-ids)
+         updated-ids (if already-selected?
+                       (filterv #(not= % session-id) selected-ids)
+                       (conj selected-ids session-id))]
+     ;; Limit to 2 selections for comparison
+     (assoc-in db [:session-browser :selected-ids]
+               (vec (take 2 updated-ids))))))
+
+(rf/reg-event-db
+ ::session-browser/clear-selection
+ (fn [db _]
+   (assoc-in db [:session-browser :selected-ids] [])))
+
+(rf/reg-event-fx
+ ::session-browser/delete-session
+ (fn [{:keys [db]} [_ session-id]]
+   (println "Deleting session from browser:" session-id)
+   ;; Delete session file and update index
+   (let [result (files/delete-session-with-index! session-id)]
+     (if (:success? result)
+       (do
+         (println "Session deleted successfully")
+         ;; Reload index to reflect deletion
+         {:dispatch [::session-browser/init]})
+       (do
+         (js/console.error "Failed to delete session:" (:error result))
+         {})))))
+
+;; ============================================================
+;; SESSION BROWSER SUBSCRIPTIONS (LOD 6)
+;; ============================================================
+
+(rf/reg-sub
+ ::session-browser/index
+ (fn [db _]
+   (get-in db [:session-browser :index])))
+
+(rf/reg-sub
+ ::session-browser/search-text
+ (fn [db _]
+   (get-in db [:session-browser :search-text])))
+
+(rf/reg-sub
+ ::session-browser/sort-by
+ (fn [db _]
+   (get-in db [:session-browser :sort-by])))
+
+(rf/reg-sub
+ ::session-browser/date-filter
+ (fn [db _]
+   (get-in db [:session-browser :date-filter])))
+
+(rf/reg-sub
+ ::session-browser/selected-ids
+ (fn [db _]
+   (get-in db [:session-browser :selected-ids])))
+
+(rf/reg-sub
+ ::session-browser/selected-count
+ :<- [::session-browser/selected-ids]
+ (fn [selected-ids _]
+   (count selected-ids)))
+
+(rf/reg-sub
+ ::session-browser/total-count
+ :<- [::session-browser/index]
+ (fn [index _]
+   (count index)))
+
+(rf/reg-sub
+ ::session-browser/filtered-sessions
+ (fn [db _]
+   (let [index (get-in db [:session-browser :index])
+         search-text (get-in db [:session-browser :search-text])
+         sort-by (get-in db [:session-browser :sort-by])
+         date-filter (get-in db [:session-browser :date-filter])
+
+         ;; Apply date filter
+         date-filtered (case date-filter
+                         :last-7-days (analytics/filter-sessions-by-date-range
+                                       index
+                                       (analytics/get-date-n-days-ago 7)
+                                       nil)
+                         :last-30-days (analytics/filter-sessions-by-date-range
+                                        index
+                                        (analytics/get-date-n-days-ago 30)
+                                        nil)
+                         :last-90-days (analytics/filter-sessions-by-date-range
+                                        index
+                                        (analytics/get-date-n-days-ago 90)
+                                        nil)
+                         :all index
+                         index)
+
+         ;; Apply search filter
+         search-filtered (analytics/filter-sessions-by-search
+                          date-filtered
+                          search-text)
+
+         ;; Apply sort
+         sorted (analytics/sort-sessions search-filtered sort-by false)]
+
+     sorted)))
+
+(rf/reg-sub
+ ::session-browser/aggregate-stats
+ :<- [::session-browser/index]
+ (fn [index _]
+   (when (seq index)
+     (analytics/compute-aggregate-stats index))))
+
+;; ============================================================
+;; COMPARISON EVENTS (LOD 6)
+;; ============================================================
+
+(rf/reg-event-fx
+ ::comparison/compare-selected-sessions
+ (fn [{:keys [db]} _]
+   (println "Comparing selected sessions...")
+   (let [selected-ids (get-in db [:session-browser :selected-ids])
+         session-a-id (first selected-ids)
+         session-b-id (second selected-ids)]
+
+     (if (and session-a-id session-b-id)
+       ;; Load both sessions (from memory or disk)
+       (let [session-a (or (get-in db [:sessions session-a-id])
+                           (files/load-session! session-a-id))
+             session-b (or (get-in db [:sessions session-b-id])
+                           (files/load-session! session-b-id))]
+
+         (if (and session-a session-b)
+           (let [comparison-report (comparison/compare-sessions session-a session-b)]
+             (println "Comparison complete:" (:overall-assessment comparison-report))
+             {:db (-> db
+                      (assoc-in [:comparison :report] comparison-report)
+                      (assoc-in [:sessions session-a-id] session-a)
+                      (assoc-in [:sessions session-b-id] session-b))
+              :dispatch [::set-view :comparison]})
+           (do
+             (js/console.error "Failed to load sessions for comparison")
+             {})))
+       (do
+         (js/console.warn "Need exactly 2 sessions selected for comparison")
+         {})))))
+
+;; ============================================================
+;; COMPARISON SUBSCRIPTIONS (LOD 6)
+;; ============================================================
+
+(rf/reg-sub
+ ::comparison/report
+ (fn [db _]
+   (get-in db [:comparison :report])))
+
+;; ============================================================
+;; ANALYTICS / TREND ANALYSIS SUBSCRIPTIONS (LOD 6)
+;; ============================================================
+
+(rf/reg-sub
+ ::analytics/trend-analysis
+ :<- [::session-browser/index]
+ (fn [session-index _]
+   "Compute trend analysis from session index.
+
+   Note: We need to load full sessions to get analysis data.
+   For now, we'll compute trends from metadata only (summary stats).
+
+   Future enhancement: Load only analysis data from sessions (not full timeline)."
+   (when (>= (count session-index) 3)
+     ;; For trend analysis, we need sessions sorted by date (oldest to newest)
+     (let [sorted-sessions (sort-by :session/created-at session-index)
+
+           ;; Extract metric values from metadata
+           breathing-rate-values (keep #(get-in % [:session/summary-stats :avg-breathing-rate])
+                                       sorted-sessions)
+           breathing-depth-values (keep #(get-in % [:session/summary-stats :avg-breathing-depth])
+                                        sorted-sessions)
+           posture-score-values (keep #(get-in % [:session/summary-stats :avg-posture-score])
+                                      sorted-sessions)
+           forward-head-values (keep #(get-in % [:session/summary-stats :forward-head-cm])
+                                     sorted-sessions)
+
+           timestamps (map :session/created-at sorted-sessions)]
+
+       ;; Compute regression for each metric
+       {:session-count (count sorted-sessions)
+        :date-range {:start-date (:session/created-at (first sorted-sessions))
+                     :end-date (:session/created-at (last sorted-sessions))}
+        :trends (cond-> {}
+                  (seq breathing-rate-values)
+                  (assoc :breathing-rate
+                         (let [regression (trends/fit-linear-regression breathing-rate-values)
+                               slope-threshold 0.05
+                               direction (cond
+                                          (> (:m regression) slope-threshold) :improving
+                                          (< (:m regression) (- slope-threshold)) :declining
+                                          :else :stable)]
+                           {:metric-name :rate-bpm
+                            :values (vec breathing-rate-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)}))
+
+                  (seq breathing-depth-values)
+                  (assoc :breathing-depth
+                         (let [regression (trends/fit-linear-regression breathing-depth-values)
+                               slope-threshold 0.05
+                               direction (cond
+                                          (> (:m regression) slope-threshold) :improving
+                                          (< (:m regression) (- slope-threshold)) :declining
+                                          :else :stable)]
+                           {:metric-name :depth-score
+                            :values (vec breathing-depth-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)}))
+
+                  (seq posture-score-values)
+                  (assoc :posture-score
+                         (let [regression (trends/fit-linear-regression posture-score-values)
+                               slope-threshold 0.05
+                               direction (cond
+                                          (> (:m regression) slope-threshold) :improving
+                                          (< (:m regression) (- slope-threshold)) :declining
+                                          :else :stable)]
+                           {:metric-name :overall-score
+                            :values (vec posture-score-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)}))
+
+                  (seq forward-head-values)
+                  (assoc :forward-head
+                         (let [regression (trends/fit-linear-regression forward-head-values)
+                               slope-threshold 0.05
+                               ;; Note: For forward head, lower is better, so flip the direction
+                               direction (cond
+                                          (< (:m regression) (- slope-threshold)) :improving
+                                          (> (:m regression) slope-threshold) :declining
+                                          :else :stable)]
+                           {:metric-name :head-forward-cm
+                            :values (vec forward-head-values)
+                            :timestamps (vec timestamps)
+                            :trend-direction direction
+                            :slope (:m regression)
+                            :intercept (:b regression)
+                            :r2 (:r2 regression)})))}))))
